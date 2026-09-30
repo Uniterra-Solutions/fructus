@@ -5,13 +5,21 @@ Unrealized PnL is **index-based** (trustless `positions::pnl` vs the live pool) 
 the health metric of R-L2 — while the order-book **TWAP** is the reserved
 liquidation reference price plus the window/staleness guard (R-L1/R-L4). A
 position is liquidatable iff its equity is **strictly** below the maintenance
-margin; the permissionless `liquidate` then re-derives the position's surviving
+margin; the `liquidate` instruction then re-derives the position's surviving
 collateral at the **initial** margin ratio (`collateral ==
 margin_required(notional, initial_margin_bps)`, the documented invariant) and pays
-a penalty (of the released collateral) to the liquidator out of the position's
-collateral (R-L3). The math is a pure module (`crate::liquidation`) locked by
-`proptest`; the `liquidate` adapter in `lib.rs` applies it to the on-chain
-`Position` / `UserCollateral` accounts.
+a penalty (of the released collateral) to the caller — the *liquidator* — out of
+the position's collateral (R-L3). The math is a pure module (`crate::liquidation`)
+locked by `proptest`; the `liquidate` adapter in `lib.rs` applies it to the
+on-chain `Position` / `UserCollateral` accounts.
+
+**Who runs it (Stage 1).** The instruction carries **no authority gate**: the guard
+is the contract's own — equity strictly below the maintenance margin, plus a TWAP
+that reaches back a full `LIQUIDATION_TWAP_WINDOW`. Stage 1 deliberately runs
+liquidation through the **protocol's own keeper**, so no outside party has to take
+over a position. Opening the trigger to **third-party liquidators** is the planned
+next stage — for when order flow outgrows protocol-side throughput; the call path
+already supports it, so no program change is needed to switch.
 
 Units: `notional`/`collateral` are USDC microunits; `unrealized_pnl` is signed
 `i128` microunits; margin/penalty ratios are basis points (`≤ 10_000`).
