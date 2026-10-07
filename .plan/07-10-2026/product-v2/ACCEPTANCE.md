@@ -52,8 +52,8 @@ measurement; see below.
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this
 block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: **review** — implementation green at `2d758bc`; adversarial review wave in flight
-- Freeze sha: `a741b28` (boundary); implement sha: `2d758bc`; record commits follow
+- Phase: **VERDICT — complete** (2026-10-07; commits local-only; owner handover pending — deploy)
+- Freeze sha: `a741b28` (boundary); implement sha: `2d758bc`; review-fix HEAD: `7f4ada3`
 - Shards: baseline captured (Rust 251/251 green, log `baseline-nextest.log`; TS sdk 62 / cli 19 /
   publisher 9 green). **Wave A ✓** (S_P1 Rust stubs A + S3 SDK stubs; spot-checks re-run by main
   agent pass; `market (mut)` reconciled in stubs+PRD). **Wave B ✓** (R-ACC: liquidation
@@ -92,12 +92,27 @@ block FIRST after a compaction, a new session or a skill edit)
 - Holds / waivers: D6 (hedge-mode, no netting) + D17 (in-place deploy attempt) recorded as
   **defaulted — vetoable until implementation begins** (user not reached at plan time; first
   clarify round cancelled without answers)
-- Next action: **REVIEW fixes applied** — F1/F2/F3/F4/F5 delivered (B2-F2/F3/F4 fixed; B2-F1 amended
-  per AMEND-PV-2; SEC-10 fixes + FructusError mapping + nonce sweep + JWT alg; CI `server` job +
-  operator_cpi matrix; docs corrections + sdk README; A-F1/F2/F3/A-F4 strengthened with
-  bite-proofs). Next: main-agent fix verification → commits per lane → ONE final full-suite run
-  (Rust ~286, sdk 86, server ~100, cli 19, publisher 9) → verdict report → close-out (docs counts
-  A-PV-2, fructus skill update, handover bundle).
+- Verdict (main agent, post-fix, ONE full run): Rust workspace **286/286** + all 5 bank suites
+  (8/18/6/2/2); clippy/fmt/check clean; sdk **86/86**, cli 19/19, publisher 9/9, server **100/100**
+  (sequential). Evidence: `evidence/{final-verdict-post,review-fix-verify,rust-audit,ts-audit}/`.
+- Review summary: 5 lanes; 3 real counterexamples fixed (indexer funding-seq restart, ws baseline
+  race, operator ambiguous-confirm double-submit); B2-F1 amended per AMEND-PV-2; SEC-10
+  redactions + FructusError mapping + nonce sweep + JWT alg; CI `server` job + operator_cpi bank
+  entry; docs corrections; 4 weak spots strengthened with bite-proofs.
+- Residual risk register: R-4 (not audited); L1 (ring-width-gap stall — bridge-dependent,
+  tolerated by the frozen model); L2 (one unreproduced faucet 4/6 observation; 4+ clean reruns);
+  L3 (4 moderate npm advisories via web3.js 1.99 → jayson/uuid; no reachable path found; fix =
+  breaking web3@3); L4 (JWT_SECRET length policy is deployment-side); L5 (server caps/queue are
+  per-process); L6 (SDK market-order/revoke builders + account mirrors are frontend-facing, not
+  consumed in-repo); keeper decisions read indexed state (one-refresh lag, safe direction).
+- Two decisions most likely to be overturned: (1) ws `user` push = signed deltas (test-pinned;
+  absolute snapshots are the plausible alternative); (2) AMEND-PV-2's accept-the-wait semantics
+  vs a future stream-end/eviction signal in the fold.
+- Handover: `.plan/07-10-2026/product-v2/HANDOVER.md` — devnet deploy bundle (pending owner
+  keypair, D17). `fructus` skill updated to the v2 facts. Not pushed (local commits only).
+- **Pending (approval)**: the AGENTS.md v2-invariant update (health threshold → account-level +
+  operator-delegation bullet) was attempted; the protected-file approval prompt timed out, so it
+  is PARKED — retry when the owner is online (A-PV-5).
 
 ## Run commands (each executed once before being written here — at red-baseline collection)
 
