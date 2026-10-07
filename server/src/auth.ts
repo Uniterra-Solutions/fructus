@@ -98,6 +98,19 @@ function verifyTokenSignature(token: string, secret: string, nowMs = Date.now())
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [header, payload, signature] = parts;
+
+  // Algorithm pinning: only a token that HEADERS as HS256 is acceptable — a
+  // token claiming another `alg` must never be treated as an HS256 candidate,
+  // even when HMAC-signed with the right secret (no alg-confusion surface).
+  let headerClaims: unknown;
+  try {
+    headerClaims = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof headerClaims !== "object" || headerClaims === null) return null;
+  if ((headerClaims as { alg?: unknown }).alg !== "HS256") return null;
+
   const expected = createHmac("sha256", secret).update(`${header}.${payload}`).digest();
   const provided = Buffer.from(signature, "base64url");
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;

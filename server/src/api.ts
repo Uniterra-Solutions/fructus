@@ -80,6 +80,12 @@ export interface ApiServerDeps {
   db: Db;
   auth: AuthService;
   operator: OperatorService;
+  /**
+   * Keeper loop instance (D-10). NOT read by the API surface — the keeper is a
+   * process concern owned by `index.ts` (start/stop); it is carried in the deps
+   * object for boot-wiring parity only. Kept (not removed) because callers
+   * construct the full deps set, including `test/review-server-interaction.test.ts`.
+   */
   keeper: Keeper;
   /** `null` when the faucet is not configured (D15 → 404). */
   faucet: Faucet | null;
@@ -632,15 +638,128 @@ function sendError(res: ServerResponse, err: unknown): void {
     sendJson(res, 400, { ok: false, error: { code: err.code, message: err.message } } satisfies ApiResponse<never>);
     return;
   }
-  if (err instanceof OperatorUnconfiguredError || err instanceof NotImplementedError) {
+  if (err instanceof OperatorUnconfiguredError) {
+    // SEC-10-1: the envelope must never carry the operator keypair path (or any
+    // fs detail an upstream message embeds) — log the detail, emit a generic
+    // operator-unavailable message.
+    console.error(`fructus-server: operator unavailable: ${err.message}`);
+    sendJson(res, 501, {
+      ok: false,
+      error: {
+        code: err.code,
+        message: "operator actions are unavailable: the operator keypair is not configured or unreadable",
+      },
+    } satisfies ApiResponse<never>);
+    return;
+  }
+  if (err instanceof NotImplementedError) {
     sendJson(res, 501, { ok: false, error: { code: err.code, message: err.message } } satisfies ApiResponse<never>);
     return;
   }
-  const message = err instanceof Error ? err.message : String(err);
+  // Generic fallback. SEC-10-2: never echo raw internal error text (paths,
+  // vendor messages) — the detail stays in the server log. D-07: when the
+  // failure is an on-chain program error, surface its FructusError name as the
+  // stable machine code instead of the opaque `internal`.
+  const detail = err instanceof Error ? err.message : String(err);
+  const programError = programErrorName(err);
+  if (programError !== null) {
+    console.error(`fructus-server: on-chain action failed (${programError}): ${detail}`);
+    sendJson(res, 500, {
+      ok: false,
+      error: { code: programError, message: `on-chain action failed: ${programError}` },
+    } satisfies ApiResponse<never>);
+    return;
+  }
+  console.error(`fructus-server: internal error: ${detail}`);
   sendJson(res, 500, {
     ok: false,
-    error: { code: "internal", message: `internal error: ${message}` },
+    error: { code: "internal", message: "internal error" },
   } satisfies ApiResponse<never>);
+}
+
+// ---------------------------------------------------------------------------
+// FructusError mapping (D-07): Anchor program errors → stable envelope codes
+// ---------------------------------------------------------------------------
+
+/**
+ * `FructusError` variant names in declaration order
+ * (`programs/fructus/src/error.rs`); Anchor's `#[error_code]` assigns
+ * `ERROR_CODE_OFFSET` (6000) + variant index, so this table is the canonical
+ * code → name mapping for the program's custom errors.
+ */
+const FRUCTUS_ERROR_NAMES = [
+  "ApyTooHigh",
+  "StaleVersion",
+  "InvalidSignature",
+  "SignatureMissing",
+  "InvalidStakePool",
+  "InvalidFundingK",
+  "InvalidMaxFunding",
+  "InvalidInitialMargin",
+  "InvalidMaintenanceMargin",
+  "BookFull",
+  "BookAlreadyInitialized",
+  "BookNotInitialized",
+  "InvalidPrice",
+  "InvalidSize",
+  "OrderNotFound",
+  "OrderOwnerMismatch",
+  "SelfTrade",
+  "InvalidMint",
+  "InsufficientFreeCollateral",
+  "VaultAlreadyInitialized",
+  "VaultNotInitialized",
+  "ArithmeticOverflow",
+  "PositionNotFound",
+  "NotLiquidatable",
+  "EventNotFound",
+  "InvalidCloseSize",
+  "PositionPdaSquatted",
+  "OperatorUnauthorized",
+  "OperatorPdaSquatted",
+] as const;
+
+/** Anchor's custom-error base (`anchor_lang::error::ERROR_CODE_OFFSET`). */
+const FRUCTUS_ERROR_OFFSET = 6_000;
+
+/** Map a custom program error number to its FructusError name; unknown → null. */
+function fructusErrorNameFromCode(code: number): string | null {
+  const index = code - FRUCTUS_ERROR_OFFSET;
+  return index >= 0 && index < FRUCTUS_ERROR_NAMES.length ? FRUCTUS_ERROR_NAMES[index] : null;
+}
+
+/**
+ * Extract the program error from a failed-transaction error: web3.js
+ * `SendTransactionError`s carry `logs`, and the same patterns ride the message.
+ * Recognized: `custom program error: 0x<hex>`, `Error Code: <NAME>`,
+ * `Error Number: <n>`. Anything unrecognized (or non-Fructus) → `null`, and the
+ * caller keeps the redacted 500.
+ */
+function programErrorName(err: unknown): string | null {
+  const texts: string[] = [];
+  const logs = (err as { logs?: unknown }).logs;
+  if (Array.isArray(logs)) {
+    for (const line of logs) if (typeof line === "string") texts.push(line);
+  }
+  if (err instanceof Error) texts.push(err.message);
+  else if (typeof err === "string") texts.push(err);
+
+  const knownNames = new Set<string>(FRUCTUS_ERROR_NAMES);
+  for (const text of texts) {
+    const byName = /Error Code:\s*([A-Za-z][A-Za-z0-9_]*)/.exec(text);
+    if (byName !== null && knownNames.has(byName[1])) return byName[1];
+    const byHex = /custom program error:\s*0x([0-9a-fA-F]+)/.exec(text);
+    if (byHex !== null) {
+      const name = fructusErrorNameFromCode(Number.parseInt(byHex[1], 16));
+      if (name !== null) return name;
+    }
+    const byNumber = /Error Number:\s*(\d+)/.exec(text);
+    if (byNumber !== null) {
+      const name = fructusErrorNameFromCode(Number(byNumber[1]));
+      if (name !== null) return name;
+    }
+  }
+  return null;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

@@ -59,9 +59,12 @@ async function main(): Promise<void> {
       if (!Array.isArray(raw)) throw new Error("keypair file is not a JSON array");
       operatorPubkey = Keypair.fromSecretKey(Uint8Array.from(raw as number[])).publicKey;
     } catch (err) {
-      throw new OperatorUnconfiguredError(
-        `cannot load the operator keypair (${err instanceof Error ? err.message : String(err)})`,
+      // SEC-10-1: the raw fs error carries the absolute keypair path — keep the
+      // detail in the server log only; the public envelope stays generic.
+      console.error(
+        `fructus-server: cannot load the operator keypair: ${err instanceof Error ? err.message : String(err)}`,
       );
+      throw new OperatorUnconfiguredError("the operator keypair is not configured or unreadable");
     }
     return operatorPubkey;
   }
@@ -123,11 +126,28 @@ async function main(): Promise<void> {
   });
   keeper.start();
 
+  // D-13: expired `auth_nonces` rows have no reader — sweep them once at boot
+  // and then hourly on an unref'd timer so the challenge table cannot grow
+  // without bound (an unref'd interval never holds the process open).
+  const NONCE_SWEEP_INTERVAL_MS = 60 * 60_000;
+  const sweepExpiredNonces = (): void => {
+    try {
+      const removed = db.deleteExpiredNonces();
+      if (removed > 0) console.log(`fructus-server: swept ${removed} expired auth nonce(s)`);
+    } catch (err) {
+      console.error(`fructus-server: nonce sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  sweepExpiredNonces();
+  const nonceSweep = setInterval(sweepExpiredNonces, NONCE_SWEEP_INTERVAL_MS);
+  nonceSweep.unref();
+
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`fructus-server: ${signal} received — shutting down`);
+    clearInterval(nonceSweep);
     keeper.stop();
     await Promise.allSettled([indexer.stop(), ws.close(), api.close()]);
     db.close();
