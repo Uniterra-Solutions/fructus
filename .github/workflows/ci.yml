@@ -1,14 +1,16 @@
 # Fructus CI.
 #
 # The suites are split as far as the tooling allows so that one red X points at
-# one module/suite and the slow suites (bank CPI, validator e2e, Trident fuzz)
-# run on separate runners in parallel:
+# one module/suite and the slow suites (bank CPI, validator e2e, server suites,
+# Trident fuzz) run on separate runners in parallel:
 #
 #   gates      fmt · clippy
 #   rust lib   one job per module of the `fructus` lib binary (7) + review suites
-#   sbf        one job builds the `.so` the bank/e2e/fuzz jobs load
-#   cpi        positions scenarios · positions property tests · collateral vault
+#   sbf        one job builds the `.so` the bank/e2e/server/fuzz jobs load
+#   cpi        positions scenarios · positions property tests · collateral vault ·
+#              operator delegation
 #   ts         publisher · sdk · cli · scripts (offline e2e dry run)
+#   server     product-v2 backend: typecheck + node:test suites (validator harness)
 #   e2e        integration: solana-test-validator + SDK against the real program
 #   fuzz       trident: fuzz_0 (oracle, gating) + market (non-blocking, aborts today)
 #
@@ -185,6 +187,8 @@ jobs:
             filter: 'binary(positions_cpi) and test(~pbt_)'
           - name: collateral vault
             filter: 'binary(collateral_cpi)'
+          - name: operator delegation
+            filter: 'binary(operator_cpi)'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.97.1
@@ -253,6 +257,51 @@ jobs:
         if: matrix.package == 'scripts'
         working-directory: ${{ matrix.package }}
         run: npm run e2e
+
+  # ----------------------------------------------------------- server (v2) ----
+  # Product-v2 backend (REQ-B-10). Every test file spawns its own hermetic
+  # `solana-test-validator` (staged `.so` + synthetic stake pool) and drives the
+  # real server process, so the job needs the same Agave CLI provisioning as
+  # `integration` plus the SBF artifact. The files run SEQUENTIALLY — parallel
+  # `node:test` file execution is a known flake here, so keep `--test-concurrency=1`.
+  server:
+    name: server · product-v2 backend
+    needs: sbf
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            sdk/package-lock.json
+      - name: Install the Agave CLI (solana-test-validator)
+        run: |
+          curl -sSfL "https://release.anza.xyz/v${SOLANA_VERSION}/install" | sh
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v8
+        with:
+          name: fructus-so
+          path: target/deploy
+      # `server` imports the SDK's sources (`fructus-sdk/src/*.js`); resolution
+      # walks up from the importing file, so `@solana/web3.js` must exist in
+      # `sdk/node_modules` (same reason as the `cli` / `scripts` entries).
+      - name: Install the SDK
+        working-directory: sdk
+        run: npm ci
+      - name: Install
+        working-directory: server
+        run: npm ci
+      - name: Type-check
+        working-directory: server
+        run: npm run typecheck
+      - name: Test
+        working-directory: server
+        # One file at a time: the suites flake when the runner parallelizes them.
+        run: npx tsx --test --test-force-exit --test-concurrency=1 test/*.test.ts
 
   # ------------------------------------------------------------- e2e (SVM) ----
   integration:
