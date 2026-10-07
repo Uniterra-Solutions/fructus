@@ -38,6 +38,17 @@ measurement; see below.
   additionally pin the subject-attributed cancel event. Verified after: operator_cpi 8/8,
   workspace 251P / 14F, zero new reds; `.so` sha 824300d3.
 
+- `AMEND-PV-2` — B2-F1 (indexer ring-width gap) adjudicated as CONTRADICTING the frozen
+  acceptance model. The review counterexample demanded a skip-ahead policy; the fixer PROVED it
+  unsatisfiable together with the frozen sweep ("case 0: folded 114, expected 307" + the
+  out-of-order hostile; its decision state is state-isomorphic with sweep cases whose gap a late
+  bridge must recover; bridges arrive up to 43 deliveries late). The requirement suite never
+  moved: the counterexample test was amended (main agent) to pin the accepted semantics —
+  buffer-and-wait, delivered events never dropped, full in-order drain on an out-of-order
+  bridge — retitled `REVIEW-INDEXER-GAP-WIDER-THAN-RING-WAITS-FOR-A-BRIDGE-AND-RECOVERS`.
+  Residual limitation (verdict register): a strictly unrecoverable gap stalls pending growth
+  until a bridge; the frozen model deliberately tolerates arbitrarily late bridges.
+
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this
 block FIRST after a compaction, a new session or a skill edit)
 
@@ -81,14 +92,12 @@ block FIRST after a compaction, a new session or a skill edit)
 - Holds / waivers: D6 (hedge-mode, no netting) + D17 (in-place deploy attempt) recorded as
   **defaulted — vetoable until implementation begins** (user not reached at plan time; first
   clarify round cancelled without answers)
-- Next action: **REVIEW phase running** — implement complete at `2d758bc`; implement verdict green
-  (main-agent: Rust 265/265 + all 5 bank suites, clippy/fmt/check clean; sdk 85/85, cli 19/19,
-  publisher 9/9, server 46/46 sequential). Review subagents dispatched: A (evidence chain /
-  hollow-test audit), B1 (program PBT model), B2 (server+sdk PBT model), C (security axis), D
-  (production-wiring audit). Then: aggregate → one fixer per defect → main-agent verification →
-  ONE final full-suite run → verdict report. W5 notes retained: `KeeperOptions.keypairPath`;
-  keeper reads indexed state (one-refresh lag, safe); `OperatorUnconfiguredError`; ws `user` push
-  = delta payload (test-pinned); server full-suite runs use `--test-concurrency=1`.
+- Next action: **REVIEW fixes applied** — F1/F2/F3/F4/F5 delivered (B2-F2/F3/F4 fixed; B2-F1 amended
+  per AMEND-PV-2; SEC-10 fixes + FructusError mapping + nonce sweep + JWT alg; CI `server` job +
+  operator_cpi matrix; docs corrections + sdk README; A-F1/F2/F3/A-F4 strengthened with
+  bite-proofs). Next: main-agent fix verification → commits per lane → ONE final full-suite run
+  (Rust ~286, sdk 86, server ~100, cli 19, publisher 9) → verdict report → close-out (docs counts
+  A-PV-2, fructus skill update, handover bundle).
 
 ## Run commands (each executed once before being written here — at red-baseline collection)
 
