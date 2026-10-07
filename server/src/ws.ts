@@ -65,6 +65,9 @@ export function attachWs(opts: WsOptions): WsHandle {
   // Per-wallet delta baseline: the portfolio state the subscribed client starts
   // from (seeded when a socket connects) and the last state pushed after that.
   const baselines = new Map<string, UserPortfolio>();
+  // Bumped whenever a push advances a wallet's baseline; a connect-time seed
+  // freezes it and skips its own write if a push raced it (newer state wins).
+  const baselineVersions = new Map<string, number>();
   const market = opts.market.toBase58();
 
   wss.on("connection", (socket: WebSocket, request) => {
@@ -85,11 +88,17 @@ export function attachWs(opts: WsOptions): WsHandle {
 
     // Seed the change baseline from the wallet's indexed portfolio at connect
     // (what the client's REST snapshot carries). A failure leaves no baseline:
-    // pushes then fall back to the absolute snapshot.
+    // pushes then fall back to the absolute snapshot. A seed that resolves
+    // after a push already advanced the baseline must NOT overwrite it — the
+    // pushed state is newer, and a stale overwrite double-counts the next
+    // delta for the client.
     void (async () => {
       try {
+        const version = baselineVersions.get(session.wallet) ?? 0;
         const portfolio = await opts.computePortfolio(new PublicKey(session.wallet));
-        if (clients.has(socket)) baselines.set(session.wallet, portfolio);
+        if (!clients.has(socket)) return;
+        if ((baselineVersions.get(session.wallet) ?? 0) !== version) return;
+        baselines.set(session.wallet, portfolio);
       } catch {
         /* no baseline — absolute snapshots only */
       }
@@ -153,6 +162,7 @@ export function attachWs(opts: WsOptions): WsHandle {
     const next = await opts.computePortfolio(new PublicKey(wallet));
     const base = baselines.get(wallet);
     baselines.set(wallet, next);
+    baselineVersions.set(wallet, (baselineVersions.get(wallet) ?? 0) + 1);
     if (base !== undefined && !portfolioChanged(next, base)) return; // no-op delivery
     sendToWallet(wallet, { type: "user", portfolio: base === undefined ? next : portfolioChange(next, base) });
   }

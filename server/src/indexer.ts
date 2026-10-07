@@ -79,8 +79,22 @@ export function createIndexer(opts: IndexerOptions): Indexer {
   let foldState: IndexerFoldState | null = null;
   let lastIndexedSlot: number | null = null;
 
+  /**
+   * 1 + the highest `funding_events.seq` already persisted. The store's seq PK
+   * is global, and the fold's counter is per-process — a restart must continue
+   * past the persisted seqs or the next funding diff is swallowed as a
+   * duplicate (see `createIndexerFoldState`).
+   */
+  function persistedFundingFloor(): number {
+    const row = opts.db.raw
+      .prepare("SELECT COALESCE(MAX(seq), 0) AS max FROM funding_events")
+      .get() as { max: number } | undefined;
+    return Number(row?.max ?? 0) + 1;
+  }
+
   /** Fold one decoded account payload into the derived history and persist it. */
   function foldDerived(kind: AccountKind, data: Buffer, slot: number, pubkeyB58: string): void {
+    foldState ??= createIndexerFoldState(persistedFundingFloor());
     if (kind === "order_book") {
       const book = decodeOrderBook(data);
       if (book === null) return;
@@ -268,13 +282,19 @@ export interface IndexerFoldResult {
   fundingEvents: FundingEventRow[];
 }
 
-function emptyFoldState(): IndexerFoldState {
+/**
+ * Fresh fold state. `nextFundingSeq` is the next `FundingEventRow.seq`: the
+ * indexer seeds it past the seqs already persisted in the store, so a
+ * post-restart funding diff cannot collide with the store's seq PK (which
+ * would silently swallow it as a duplicate) — a pure caller starts at 1.
+ */
+export function createIndexerFoldState(nextFundingSeq = 1): IndexerFoldState {
   return {
     fillSeq: new Map(),
     pendingFills: new Map(),
     fundingSlot: new Map(),
     fundingAccumulator: new Map(),
-    nextFundingSeq: 1,
+    nextFundingSeq,
   };
 }
 
@@ -309,7 +329,7 @@ export function foldIndexerEvents(
   state: IndexerFoldState | null,
   snapshot: IndexerSnapshot,
 ): IndexerFoldResult {
-  const next = state ?? emptyFoldState();
+  const next = state ?? createIndexerFoldState();
   return snapshot.kind === "order_book"
     ? foldOrderBook(next, snapshot)
     : foldMarketFunding(next, snapshot);

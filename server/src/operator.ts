@@ -60,7 +60,11 @@ export interface OperatorService {
   executeOrder(user: string, order: OrderAction): Promise<ActionResponse>;
   executeCancel(user: string, cancel: CancelAction): Promise<ActionResponse>;
   executeClose(user: string, close: CloseAction): Promise<ActionResponse>;
-  /** Pending actions across all users (per-user FIFO queues). */
+  /**
+   * Pending actions across all users (per-user FIFO queues). Consumed by the
+   * review queue-drain evidence (`server/test/review-server-pbt.test.ts`
+   * asserts it returns to 0) and stubbed by the API/auth test harnesses.
+   */
   queueDepth(): number;
 }
 
@@ -81,6 +85,9 @@ const RETRYABLE_SUBMIT = /expired|blockhash not found|blockhashnotfound|timed? ?
 
 /** Max submit attempts per action (PRD REQ-B-5: "blockhash refresh + bounded retries"). */
 const MAX_SUBMIT_ATTEMPTS = 3;
+
+/** Max confirmation re-polls for one already-sent signature (ambiguous transport). */
+const MAX_CONFIRM_POLLS = 3;
 
 export function createOperator(opts: OperatorOptions): OperatorService {
   const { connection, db, programId } = opts;
@@ -133,6 +140,7 @@ export function createOperator(opts: OperatorOptions): OperatorService {
   // appends after it. `prev.then(task, task)` runs the task regardless of the
   // previous action's outcome — one failure never blocks the wallet's queue.
   const chains = new Map<string, Promise<void>>();
+  /** Enqueued-but-unsettled actions; backs `queueDepth()` (see the interface). */
   let pending = 0;
   function enqueue<T>(user: string, task: () => Promise<T>): Promise<T> {
     pending += 1;
@@ -152,9 +160,19 @@ export function createOperator(opts: OperatorOptions): OperatorService {
     return next;
   }
 
-  /** Sign + send + confirm one instruction, with a fresh blockhash per attempt. */
+  /**
+   * Sign + send + confirm one instruction. Retries re-sign ONLY while nothing
+   * has been accepted: once `sendRawTransaction` returns a signature the tx
+   * may already have landed, so a failure after that (e.g. a transport error
+   * from `confirmTransaction`) is AMBIGUOUS. Re-signing with a fresh blockhash
+   * would make a second, cluster-undedupable landing (double-apply); instead
+   * the sent signature is reconciled in place — bounded `confirmTransaction`
+   * re-polls — and, if it still cannot be confirmed, reported as an
+   * unconfirmed submission, never re-submitted.
+   */
   async function submit(instruction: TransactionInstruction, kp: Keypair): Promise<string> {
     for (let attempt = 1; ; attempt++) {
+      let sent: { signature: string; blockhash: string; lastValidBlockHeight: number };
       try {
         const tx = new Transaction().add(instruction);
         tx.feePayer = kp.publicKey;
@@ -165,13 +183,30 @@ export function createOperator(opts: OperatorOptions): OperatorService {
           skipPreflight: false,
           preflightCommitment: "confirmed",
         });
-        await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-        return signature;
+        sent = { signature, blockhash, lastValidBlockHeight };
       } catch (err) {
         if (attempt >= MAX_SUBMIT_ATTEMPTS || !RETRYABLE_SUBMIT.test(describe(err))) {
           throw err;
         }
-        // Transient (expired blockhash / transport): retry with a fresh blockhash.
+        // Transient (expired blockhash / transport): nothing was accepted by
+        // the send call, so a fresh blockhash and signature are safe to retry.
+        continue;
+      }
+      for (let poll = 1; ; poll++) {
+        try {
+          await connection.confirmTransaction(
+            { signature: sent.signature, blockhash: sent.blockhash, lastValidBlockHeight: sent.lastValidBlockHeight },
+            "confirmed",
+          );
+          return sent.signature;
+        } catch (err) {
+          if (poll >= MAX_CONFIRM_POLLS || !RETRYABLE_SUBMIT.test(describe(err))) {
+            throw new Error(
+              `transaction ${sent.signature} was submitted but could not be confirmed (${describe(err)})`,
+            );
+          }
+          // Ambiguous transport failure: re-poll the SAME signature.
+        }
       }
     }
   }
