@@ -47,13 +47,18 @@ fn system_program_id() -> Pubkey {
     Pubkey::default()
 }
 
-/// Locate the compiled Fructus SBF binary (`cargo build-sbf` / `anchor build`
-/// output), returning `None` when it has not been built yet.
+/// Locate the compiled Fructus SBF binary.
+///
+/// The documented bank/e2e build flow (docs/testing.md) stages the artifact at
+/// `target/deploy/fructus.so` (`cargo build-sbf --arch v0 … --sbf-out-dir
+/// target/deploy-v0` + `cp`), so that copy is preferred; the plain
+/// `cargo build-sbf` leftover under `target/sbpf-solana-solana/release/` is a
+/// different (non-v0) byte image and only a fallback.
 fn find_fructus_so() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let candidates = [
-        manifest.join("../../target/sbpf-solana-solana/release/fructus.so"),
         manifest.join("../../target/deploy/fructus.so"),
+        manifest.join("../../target/sbpf-solana-solana/release/fructus.so"),
     ];
     candidates.into_iter().find(|p| p.exists())
 }

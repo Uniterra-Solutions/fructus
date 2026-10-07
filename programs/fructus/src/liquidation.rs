@@ -322,6 +322,48 @@ mod tests {
         }
     }
 
+    /// REQ-A2-1/D8 deterministic witness: `<` is STRICT at the measure-zero
+    /// `equity == requirement` point — a random sweep cannot hit it, so pin the
+    /// boundary with hand-computed literals (a `<` → `<=` mutant must fail here).
+    ///
+    /// Arithmetic (`n_long = 333, n_short = 0, maintenance_bps = 3_000`):
+    ///   `requirement = ceil(333 × 3_000 / 10_000) = ceil(99.9) = 100`
+    ///   * `deposited = 100, pnl_sum = 0` ⇒ `equity = 100 == requirement` ⇒ healthy
+    ///   * `deposited =  99, pnl_sum = 0` ⇒ `equity =  99 = requirement - 1` ⇒ liquidatable
+    ///   * `n_long = n_short = 0` ⇒ never liquidatable (short-circuit), any equity
+    ///
+    /// Two-sided sum: `n_long = n_short = 1, bps = 10_000` ⇒ `ceil(1/10_000) + ceil(1/10_000) = 2`;
+    /// `deposited = 2` healthy, `deposited = 1` liquidatable.
+    #[test]
+    fn account_health_strict_equality_boundary_is_healthy() {
+        // ceil(333 × 3_000 / 10_000) = ceil(99.9) = 100 (inexact product).
+        assert_eq!(account_margin_required(333, 0, 3_000), Some(100));
+        // equity EXACTLY == the total maintenance requirement is HEALTHY: the
+        // predicate is `equity < required`, never `<=`.
+        assert_eq!(
+            account_liquidatable(100, 0, 333, 0, 3_000),
+            Some(false),
+            "equity == total maintenance must be healthy (strict `<`)"
+        );
+        // One microunit below the requirement is liquidatable.
+        assert_eq!(
+            account_liquidatable(99, 0, 333, 0, 3_000),
+            Some(true),
+            "equity == requirement - 1 must be liquidatable"
+        );
+        // Zero exposure is never liquidatable, even at negative equity.
+        assert_eq!(account_liquidatable(0, 0, 0, 0, 3_000), Some(false));
+        assert_eq!(
+            account_liquidatable(0, -1_000_000, 0, 0, 3_000),
+            Some(false)
+        );
+        // Two-sided equality across the SUMMED requirement: ceil(1/10_000) = 1
+        // per side ⇒ required = 2; equity == 2 is healthy, equity == 1 is not.
+        assert_eq!(account_margin_required(1, 1, 10_000), Some(2));
+        assert_eq!(account_liquidatable(2, 0, 1, 1, 10_000), Some(false));
+        assert_eq!(account_liquidatable(1, 0, 1, 1, 10_000), Some(true));
+    }
+
     // --- R-L3: penalty bounds + monotonicity (`liquidation_penalty` kept) ---
 
     proptest! {

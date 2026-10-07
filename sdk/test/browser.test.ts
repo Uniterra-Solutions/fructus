@@ -66,7 +66,7 @@ function walkModuleGraph(entry: string): { files: string[]; offenders: string[] 
   return { files: [...seen].sort(), offenders: offenders.sort() };
 }
 
-test("SDK-NO-NODE-BUILTINS: no module reachable from sdk/src/index.ts imports a node: builtin.", () => {
+test("SDK-NO-NODE-BUILTINS: no module reachable from sdk/src/index.ts imports a node: builtin (positive control: the module graph is non-empty).", () => {
   const { files, offenders } = walkModuleGraph(ENTRY);
 
   // Positive control (non-vacuity): the walk really traversed the graph — a

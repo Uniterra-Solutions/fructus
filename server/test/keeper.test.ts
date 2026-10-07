@@ -174,7 +174,7 @@ async function readLong(
   };
 }
 
-test("KEEPER-SETTLES-AND-LIQUIDATES: the long bleeds funding until under-margin and tick() settles + liquidates with no manual submission", async () => {
+test("KEEPER-SETTLES-AND-LIQUIDATES: with a two-sided book (premium ≠ 0) the long bleeds funding until under-margin; repeated tick() calls settle funding and liquidate with no manual submission.", async () => {
   const validator = await startValidator();
   const db = openDb(":memory:");
   const fixtureDir = mkdtempSync(join(tmpdir(), "fructus-keeper-"));

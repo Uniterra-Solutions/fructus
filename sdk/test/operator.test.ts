@@ -91,12 +91,12 @@ const SET_OPERATOR_METAS = (record: PublicKey): ExpectedMeta[] => [
 
 // --- the 8 instructions ------------------------------------------------------
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: set_operator — operator pubkey arg + 4 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares.", () => {
   const ix = buildSetOperator({ user: USER, market: MARKET, operator: OPERATOR });
   assertSurface(ix, "set_operator", OPERATOR.toBuffer(), SET_OPERATOR_METAS(OPERATOR_RECORD));
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_deposit_collateral — u64 LE amount + 10 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_deposit_collateral — u64 LE amount + 10 accounts.", () => {
   const ix = buildOperatorDepositCollateral({
     operator: OPERATOR,
     user: USER,
@@ -119,7 +119,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_deposit_collateral — 
   ]);
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_withdraw_collateral — u64 LE amount + 12 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_withdraw_collateral — u64 LE amount + 12 accounts.", () => {
   const ix = buildOperatorWithdrawCollateral({
     operator: OPERATOR,
     user: USER,
@@ -145,7 +145,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_withdraw_collateral —
   ]);
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_open_position — side/size/price + 9 accounts (position PDA keyed by side).", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_open_position — side/size/price + 9 accounts (position PDA keyed by side).", () => {
   const ix = buildOperatorOpenPosition({
     operator: OPERATOR,
     user: USER,
@@ -185,7 +185,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_open_position — side/
   assert.equal(shortIx.keys[5].pubkey.toBase58(), POSITION_SHORT.toBase58(), "side 1 => position_short PDA");
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_close_position — side/size + 8 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_close_position — side/size + 8 accounts.", () => {
   const ix = buildOperatorClosePosition({
     operator: OPERATOR,
     user: USER,
@@ -206,7 +206,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_close_position — side
   ]);
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_place_limit_order — side/price/size + 6 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_place_limit_order — side/price/size + 6 accounts.", () => {
   const ix = buildOperatorPlaceLimitOrder({
     operator: OPERATOR,
     user: USER,
@@ -231,7 +231,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_place_limit_order — s
   );
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_place_market_order — side/size + 6 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_place_market_order — side/size + 6 accounts.", () => {
   const ix = buildOperatorPlaceMarketOrder({
     operator: OPERATOR,
     user: USER,
@@ -255,7 +255,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_place_market_order — 
   );
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_cancel_order — seq + 5 accounts.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. operator_cancel_order — seq + 5 accounts.", () => {
   const ix = buildOperatorCancelOrder({
     operator: OPERATOR,
     user: USER,
@@ -273,7 +273,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: operator_cancel_order — seq + 
 
 // --- bind / revoke helpers (D4) ---------------------------------------------
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorBindInstructions composes [spl approve(Operator PDA, amount), set_operator(operator)].", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. buildOperatorBindInstructions composes [spl approve(Operator PDA, amount), set_operator(operator)].", () => {
   // NOTE: the SPL `approve` source (the subject's token account) cannot be
   // derived from (user, market) alone, so the real bodies land together with a
   // `userAta: PublicKey` field on `OperatorBindParams` — the params object is
@@ -315,7 +315,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorBindInstructions co
   }
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorBindInstructions defaults the allowance to u64::MAX (D4).", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. buildOperatorBindInstructions defaults the allowance to u64::MAX (D4).", () => {
   const params = { user: USER, market: MARKET, operator: OPERATOR, userAta: USER_ATA };
   const ixs = buildOperatorBindInstructions(params);
   assert.equal(ixs.length, 2, "bind composes exactly [spl approve, set_operator]");
@@ -327,7 +327,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorBindInstructions de
   );
 });
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorRevokeInstructions composes [spl approve(Operator PDA, 0), set_operator(default)].", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. buildOperatorRevokeInstructions composes [spl approve(Operator PDA, 0), set_operator(default)].", () => {
   const params = { user: USER, market: MARKET, userAta: USER_ATA };
   const ixs = buildOperatorRevokeInstructions(params);
   assert.equal(ixs.length, 2, "revoke composes exactly [spl approve(0), set_operator(default)]");
@@ -355,7 +355,7 @@ test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: buildOperatorRevokeInstructions 
 
 // --- explicit PDA overrides --------------------------------------------------
 
-test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: explicit PDA overrides take precedence over derivation.", () => {
+test("SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE: each operator builder emits the exact discriminator, argument bytes and account meta list the program declares. explicit PDA overrides take precedence over derivation.", () => {
   const record = fill(0x66);
   const position = fill(0x67);
   const collateral = fill(0x68);

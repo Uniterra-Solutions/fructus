@@ -32,7 +32,7 @@ function operatorAccount(market: PublicKey, user: PublicKey, operator: PublicKey
   return buf;
 }
 
-test("SDK-OPERATOR-DECODER-ROUNDTRIPS: the Operator payload is exactly 97 bytes with market@0, user@32, operator@64, bump@96.", () => {
+test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte layout byte-exactly (incl. truncation hostiles). The Operator payload is exactly 97 bytes with market@0, user@32, operator@64, bump@96.", () => {
   assert.equal(OPERATOR_LEN, 97, "Operator payload LEN");
   let cursor = 0;
   for (const [offset, size] of [
@@ -47,7 +47,7 @@ test("SDK-OPERATOR-DECODER-ROUNDTRIPS: the Operator payload is exactly 97 bytes 
   assert.equal(cursor, OPERATOR_LEN, "the four fields sum to LEN");
 });
 
-test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte layout byte-exactly.", () => {
+test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte layout byte-exactly (incl. truncation hostiles).", () => {
   const decoded = decodeOperator(operatorAccount(MARKET, USER, OPERATOR, 254));
   assert.notEqual(decoded, null, "a complete discriminator+payload buffer must decode");
   assert.equal(decoded!.market.toBase58(), MARKET.toBase58(), "market");
@@ -56,7 +56,7 @@ test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte la
   assert.equal(decoded!.bump, 254, "bump");
 });
 
-test("SDK-OPERATOR-DECODER-ROUNDTRIPS: extreme field bytes and the revoked (default-key) state decode exactly.", () => {
+test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte layout byte-exactly (incl. truncation hostiles). Extreme field bytes and the revoked (default-key) state decode exactly.", () => {
   const extremes = decodeOperator(operatorAccount(fill(0x00), fill(0xff), fill(0xff), 255));
   assert.notEqual(extremes, null, "all-0x00 / all-0xff field vectors must decode");
   assert.equal(extremes!.market.toBase58(), fill(0x00).toBase58(), "market");
@@ -72,7 +72,7 @@ test("SDK-OPERATOR-DECODER-ROUNDTRIPS: extreme field bytes and the revoked (defa
   assert.equal(revoked!.market.toBase58(), MARKET.toBase58(), "market survives revoke");
 });
 
-test("SDK-OPERATOR-DECODER-ROUNDTRIPS: short buffers yield null; trailing padding is ignored.", () => {
+test("SDK-OPERATOR-DECODER-ROUNDTRIPS: decodeOperator round-trips the 97-byte layout byte-exactly (incl. truncation hostiles). Short buffers yield null; trailing padding is ignored.", () => {
   const full = operatorAccount(MARKET, USER, OPERATOR, 7);
   assert.equal(decodeOperator(null), null, "null input");
   assert.equal(decodeOperator(Buffer.alloc(0)), null, "empty buffer");

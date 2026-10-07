@@ -802,7 +802,7 @@ function expectDto(label: string, checker: (value: unknown) => Problems, value: 
   assert.deepEqual(problems, [], `${label} must match the sdk/src/api.ts DTO shape — problems: ${problems.join("; ")}`);
 }
 
-test("SHARED-DTOS-STAY-IN-SYNC: runtime shape checks validate every e2e response body against the sdk/src/api.ts DTO shapes.", async () => {
+test("SHARED-DTOS-STAY-IN-SYNC: runtime shape checks validate every e2e response body against the sdk/src/api.ts DTO shapes (typecheck gate is the compile half).", async () => {
   const s = await scenario();
   const slot = await waitForIndexerSlot(s.server);
   const note = slot === null ? "indexer: /healthz.slot stayed null through the bounded wait" : `indexer slot ${slot}`;

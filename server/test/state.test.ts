@@ -262,7 +262,7 @@ function assertPortfolio(portfolio: UserPortfolio, seed: PortfolioSeed, label: s
 // STATE-HEALTH-MATCHES-PROGRAM-TRIGGER
 // ---------------------------------------------------------------------------
 
-test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: seeded account-set sweep equals the Rust-derived predicate", () => {
+test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: the server's liquidatable flag equals the program's account-level predicate for every generated account set.", () => {
   const db = openDb(":memory:");
   try {
     for (let caseIdx = 0; caseIdx < 400; caseIdx++) {
@@ -305,7 +305,7 @@ test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: seeded account-set sweep equals the 
   }
 });
 
-test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: equity == requirementMaint is healthy; one microunit below is liquidatable", () => {
+test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: the server's liquidatable flag equals the program's account-level predicate for every generated account set. equity == requirementMaint is healthy; one microunit below is liquidatable.", () => {
   const db = openDb(":memory:");
   try {
     const base: Omit<PortfolioSeed, "deposited"> = {
@@ -347,7 +347,7 @@ test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: equity == requirementMaint is health
   }
 });
 
-test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: both sides sum without netting; zero exposure is never liquidatable", () => {
+test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: the server's liquidatable flag equals the program's account-level predicate for every generated account set. both sides sum without netting; zero exposure is never liquidatable.", () => {
   const db = openDb(":memory:");
   try {
     // Equal-and-opposite sides do NOT offset: the requirement is the sum.
@@ -392,7 +392,7 @@ test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: both sides sum without netting; zero
   }
 });
 
-test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: signed upnl (long negative, short positive) drives equity and health", () => {
+test("STATE-HEALTH-MATCHES-PROGRAM-TRIGGER: the server's liquidatable flag equals the program's account-level predicate for every generated account set. signed upnl (long negative, short positive) drives equity and health.", () => {
   const db = openDb(":memory:");
   try {
     // Index halves (1e12/1e12 → 1e12/2e12) ⇒ change = -APY_SCALE/2.

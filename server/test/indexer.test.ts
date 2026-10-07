@@ -317,7 +317,7 @@ function coversAll(cursors: number[], keep: boolean[], n: number): boolean {
   return need >= n;
 }
 
-test("INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: seeded fill-ring sweep folds every event exactly once, in seq order", () => {
+test("INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: folding any snapshot sequence (out-of-order, duplicated, wrapped, gapped→resync) yields each fill/funding event exactly once in seq order.", () => {
   for (let caseIdx = 0; caseIdx < 240; caseIdx++) {
     const rng = xorshift(0xc0ffee ^ (caseIdx * 2654435761));
 
@@ -359,7 +359,7 @@ test("INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: seeded fill-ring sweep folds every even
   }
 });
 
-test("INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: seeded funding sweep folds every accumulator change exactly once", () => {
+test("INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: folding any snapshot sequence (out-of-order, duplicated, wrapped, gapped→resync) yields each fill/funding event exactly once in seq order. seeded funding sweep folds every accumulator change exactly once.", () => {
   for (let caseIdx = 0; caseIdx < 160; caseIdx++) {
     const rng = xorshift(0xf00d ^ (caseIdx * 40503));
 
@@ -644,7 +644,7 @@ async function compareIndexedState(
   assert.equal(storedRows, indexedRows, `${label}: indexed row count must equal the chain account count`);
 }
 
-test("INDEXER-STATE-MATCHES-CHAIN: after resync every indexed account is byte-identical to a direct RPC read", async () => {
+test("INDEXER-STATE-MATCHES-CHAIN: after resync against a live validator, every indexed account decodes byte-identically to a direct RPC read.", async () => {
   const validator = await startValidator();
   const db = openDb(":memory:");
   let indexer: Indexer | null = null;

@@ -42,7 +42,7 @@ function signedI128(rng: () => number): bigint {
   return rng() % 2 === 0 ? mag : -mag;
 }
 
-test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountEquity is the signed deposited + Σ upnl across a 10k seeded sweep.", () => {
+test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep.", () => {
   const rng = xorshift(0xa11ce);
   for (let i = 0; i < 10_000; i++) {
     const deposited = bigInRange(rng, 0n, U64_MAX);
@@ -55,7 +55,7 @@ test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountEquity is the signed deposited + �
   }
 });
 
-test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountMarginRequired is the checked two-side ceiling sum across a 10k seeded sweep.", () => {
+test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep. accountMarginRequired is the checked two-side ceiling sum.", () => {
   const rng = xorshift(0xb0b);
   for (let i = 0; i < 10_000; i++) {
     const nLong = bigInRange(rng, 0n, U64_MAX);
@@ -69,7 +69,7 @@ test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountMarginRequired is the checked two-
   }
 });
 
-test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountLiquidatable is the strict equity-vs-maintenance predicate across a 10k seeded sweep.", () => {
+test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep. accountLiquidatable is the strict equity-vs-maintenance predicate.", () => {
   const rng = xorshift(0xc0ffee);
   for (let i = 0; i < 10_000; i++) {
     const deposited = bigInRange(rng, 0n, U64_MAX);
@@ -88,7 +88,7 @@ test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: accountLiquidatable is the strict equity-
   }
 });
 
-test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: pinned specials — zero exposure, the equality boundary, a negative equity sum.", () => {
+test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep. pinned specials — zero exposure, the equality boundary, a negative equity sum.", () => {
   // Zero exposure is never liquidatable — the short-circuit fires before the
   // comparison (`equity < requirement` would read `-1 < 0` ⇒ true without it).
   assert.equal(accountLiquidatable(0n, -1n, 0n, 0n, 500), false, "zero exposure short-circuits");
@@ -115,4 +115,32 @@ test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: pinned specials — zero exposure, the eq
   assert.equal(accountEquity(U64_MAX, -U64_MAX), 0n, "u64-max equity cancels to zero");
   assert.equal(accountMarginRequired(U64_MAX, U64_MAX, 10_000), 2n * U64_MAX, "two-sided sum exceeds u64 without wrapping");
   assert.equal(accountMarginRequired(0n, 0n, 10_000), 0n, "zero exposure ⇒ zero requirement");
+});
+
+test("SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep. pinned independent ceiling vectors for marginRequired on inexact n×bps/10_000 divisions.", () => {
+  // Independent pin of the CEILING convention (byte-identical to the Rust
+  // `margin_required`'s `(n × bps + 9_999) / 10_000`). Every product below is
+  // INEXACT in `/ 10_000`, so the ceiling sits exactly one microunit above the
+  // floor; the raw literal expectations (never re-derived through
+  // `marginRequired`) fail immediately on a ceiling→floor drift that the
+  // sweeps above — which share the helper — cannot see:
+  //   ceil(1          × 5_000 / 10_000) = ceil(0.5)          = 1          (floor 0)
+  //   ceil(3          × 3_333 / 10_000) = ceil(0.9999)       = 1          (floor 0)
+  //   ceil(10_001     × 1     / 10_000) = ceil(1.0001)       = 2          (floor 1)
+  //   ceil(333        × 3_000 / 10_000) = ceil(99.9)         = 100        (floor 99)
+  //   ceil(999_999_999_999 × 1 / 10_000) = ceil(99_999_999.9999) = 100_000_000 (floor 99_999_999)
+  assert.equal(marginRequired(1n, 5_000), 1n, "ceil(0.5) rounds up");
+  assert.equal(marginRequired(3n, 3_333), 1n, "ceil(0.9999) rounds up");
+  assert.equal(marginRequired(10_001n, 1), 2n, "ceil(1.0001) rounds up");
+  assert.equal(marginRequired(333n, 3_000), 100n, "ceil(99.9) rounds up");
+  assert.equal(marginRequired(999_999_999_999n, 1), 100_000_000n, "ceil(99_999_999.9999) rounds up");
+
+  // The account-level aggregate inherits the ceiling PER SIDE — under a floor
+  // drift this would be 0 + 0 = 0:
+  assert.equal(accountMarginRequired(1n, 1n, 1), 2n, "ceil(1/10_000) per side");
+
+  // The strict trigger consumes the ceiling: equity == ceil(99.9) = 100 is
+  // healthy; one microunit below is liquidatable.
+  assert.equal(accountLiquidatable(100n, 0n, 333n, 0n, 3_000), false, "equity == ceiling ⇒ healthy");
+  assert.equal(accountLiquidatable(99n, 0n, 333n, 0n, 3_000), true, "one microunit below the ceiling ⇒ liquidatable");
 });

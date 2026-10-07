@@ -117,7 +117,7 @@ async function fundSol(connection: Connection, pubkey: PublicKey, sol: number): 
   assert.ok(got >= lamports, `airdrop to ${pubkey.toBase58()} did not reach ${sol} SOL (got ${got})`);
 }
 
-test("OPERATOR-QUEUE-SERIALIZES-PER-USER: N=5 concurrent enqueues for one user execute FIFO without interleaving or loss", async () => {
+test("OPERATOR-QUEUE-SERIALIZES-PER-USER: concurrent enqueues for one user execute FIFO without interleaving or loss.", async () => {
   const validator = await startValidator();
   const db = openDb(":memory:");
   const fixtureDir = mkdtempSync(join(tmpdir(), "fructus-operator-"));
