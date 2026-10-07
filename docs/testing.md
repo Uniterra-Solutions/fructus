@@ -53,11 +53,13 @@ Every suite and what it needs (the CI split in
 
 | Suite | Location | Tests | Needs |
 | --- | --- | --- | --- |
-| lib property/unit invariants | `programs/fructus/src/**` (`tests.rs` 87, `handlers_tests` 39, `positions` 30, `funding` 24, `liquidation` 20, `state` 9, `settlement` 8, `collateral` 7, `orderbook` 4, `operator` 1) | 229 | — |
+| lib property/unit invariants | `programs/fructus/src/**` (`tests.rs` 87, `handlers_tests` 39, `positions` 30, `funding` 24, `liquidation` 21, `state` 9, `settlement` 8, `collateral` 7, `orderbook` 4, `operator` 1) | 230 | — |
 | bank CPI · collateral vault | `tests/collateral_cpi.rs` | 6 | fresh `.so` |
 | bank CPI · positions | `tests/positions_cpi.rs` | 18 (15 scenarios + 2 property tests × 20 bank cases + the freshness check) | fresh `.so` |
 | bank CPI · operator delegation | `tests/operator_cpi.rs` | 8 (7 scenarios + the freshness check) | fresh `.so` |
 | review suites | `tests/review_liquidation_{conservation,invariants}.rs` | 4 | — |
+| review PBT · product-v2 | `tests/review_pbt_product_v2.rs` + `tests/review_bank_pbt_product_v2.rs` | 20 (15 pure + 5 bank) | fresh `.so` |
+| server · product-v2 backend | `server/test` (functional + review files) | 100 | fresh `.so` + `solana-test-validator`; run with `--test-concurrency=1` |
 | publisher (off-chain keeper) | `publisher/test` | 9 | — |
 | trader SDK | `sdk/test` | 85 | — |
 | trader CLI | `cli/test` | 19 | — |
@@ -69,11 +71,12 @@ Every suite and what it needs (the CI split in
 `declare_id!` pins the program id in `programs/fructus/src/lib.rs` — keep it in
 lockstep with `Anchor.toml` (a mismatched id would break every PDA derivation).
 
-**Totals as measured on 7 Oct 2026** (`cargo nextest run --workspace` → 265 passed /
-0 failed; `npm test` in `publisher/`, `sdk/`, `cli/` → 9 / 85 / 19): **265 Rust**
-(229 lib + 6 collateral bank + 18 positions bank + 8 operator bank + 4 review) and
-**113 TypeScript**. Re-run the commands above if you quote these numbers anywhere;
-earlier drafts of this table carried 251 Rust / 90 TypeScript.
+**Totals as measured on 7 Oct 2026 (product-v2 verdict)** (`cargo nextest run --workspace` →
+286 passed / 0 failed; `npm test` in `publisher/`, `sdk/`, `cli/` → 9 / 86 / 19; `server` →
+100 passed): **286 Rust** (230 lib + 6 collateral bank + 18 positions bank + 8 operator bank +
+4 review + 20 review PBT), **114 TypeScript** in the trader toolchain, and **100** in the
+`server/` suite. Re-run the commands above if you quote these numbers anywhere; earlier
+drafts of this table carried 251 Rust / 90 TypeScript, then 265 / 113.
 
 One `.so` serves the bank suites, the validator e2e and the fuzz harness, but it lives
 at two paths — `target/deploy/fructus.so` (bank + e2e; a stale one trips
