@@ -4,7 +4,8 @@
 | --- | --- | --- |
 | `programs/fructus/src/` | On-chain Anchor program (yield oracle + market + settlement data) | `lib.rs`, `state.rs`, `exchange.rs`, `ed25519.rs` |
 | `publisher/` | Off-chain TypeScript keeper (fetch → sign → submit) | `src/index.ts`, `src/update.ts`, `src/message.ts` |
-| `sdk/` | Typed TypeScript SDK mirroring the program (instruction builders, account decoders, funding/PnL) | `package.json`, `src/` |
+| `server/` | Off-chain backend (product-v2): SIWS auth, operator bind relay, `/actions/*` writes, indexer/keeper, WS push — see [api.md](api.md) | `src/index.ts`, `src/api.ts`, `src/ws.ts`, `src/auth.ts` |
+| `sdk/` | Typed TypeScript SDK mirroring the program (instruction builders incl. the operator surface, account decoders, funding/PnL) | `package.json`, `src/` |
 | `cli/` | Command-line trader (open/close/deposit/withdraw/position/funding/mark/index) | — |
 | `scripts/` | Devnet deployment + e2e lifecycle walk | `e2e.mts`, `deploy.sh` |
 | `trident-tests/` | On-chain stateful fuzz harness (separate workspace; reads the SBPFv0 build at `target/deploy-v0`) | `fuzz_0/test_fuzz.rs` |
@@ -20,16 +21,17 @@
 
 | File | Responsibility |
 | --- | --- |
-| `lib.rs` | Instruction entrypoints + account contexts (oracle / market / order book / vault) |
+| `lib.rs` | Instruction entrypoints + account contexts (oracle / market / order book / vault / operator) |
 | `constants.rs` | APY/funding scale, domain separators, PDA seeds, capacities, validation bounds |
-| `state.rs` | `YieldOracle`, `PerpMarket`, `OrderBook` (zero-copy), `UserCollateral` + pure helpers |
+| `state.rs` | `YieldOracle`, `PerpMarket`, `OrderBook` (zero-copy), `UserCollateral`, `Position`, `Operator` + pure helpers |
 | `orderbook.rs` | Pure CLOB matching engine + `mark()`/`twap()` (no Anchor accounts) |
-| `collateral.rs` | Pure `free_collateral` + deposit/withdraw accounting |
+| `collateral.rs` | Pure `free_collateral` + deposit/withdraw accounting (free seam + equity gate) |
 | `exchange.rs` | Trustless settlement: stake-pool exchange rate + realized yield + annualize |
 | `positions.rs` | Pure position lifecycle: margin, entry running sums, signed PnL, `apply_pnl` (per-account primitive) |
 | `settlement.rs` | Design A PnL pool: loser debits collected into `PerpMarket.pnl_pool`; winner credits paid only up to the pool (remainder → `UserCollateral.claimable`); claim payout; liquidation loss booking |
 | `funding.rs` | Pure funding engine: premium, funding rate, funding payment, `SideFlow` |
-| `liquidation.rs` | Pure liquidation: equity, maintenance margin, `liquidatable`, penalty, `apply_liquidation` |
+| `liquidation.rs` | Pure account-level liquidation: `account_equity`, both-side `account_margin_required`, `account_liquidatable`, loss booking, penalty, `apply_liquidation` |
+| `operator.rs` | Pure operator delegation: the `authorized` auth matrix for `set_operator` + `operator_*` |
 | `ed25519.rs` | Publisher signature verification via instruction introspection |
 | `error.rs` | `FructusError` error codes |
 | `tests.rs` | Property-based + mock-sysvar integration tests, plus the lib-adapter adversarial invariants (that drive `apply_open_fills`/`apply_close_fills`); per-module `#[cfg(test)]` blocks hold each module's own invariants |

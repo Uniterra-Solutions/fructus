@@ -7,7 +7,10 @@ atomically. The free-collateral seam (`free_collateral() = deposited − reserve
 is the hook the position lifecycle (#5) uses to keep collateral backing open
 margin from being withdrawn: every open reserves margin, every close releases
 it, and `withdraw_collateral` rejects anything that would push free collateral
-negative.
+negative. Since product-v2 (D9/REQ-A2-3), a withdrawal is additionally gated by
+the **account equity** check: the post-withdraw `equity = deposited + Σ upnl`
+(over both sides) must stay at or above the reserved (initial-margin)
+requirement.
 
 ## Public API
 
@@ -21,7 +24,7 @@ negative.
 | --- | --- | --- |
 | `free_collateral` | `(deposited: u64, reserved: u64) -> Option<u64>` | `deposited.checked_sub(reserved)`; `None` iff `reserved > deposited` |
 | `deposit` | `(deposited: u64, amount: u64) -> Option<u64>` | `deposited.checked_add(amount)`; `None` on overflow |
-| `withdraw` | `(deposited: u64, reserved: u64, amount: u64) -> Option<u64>` | `deposited.checked_sub(amount)` gated by `amount <= free_collateral` |
+| `withdraw` | `(deposited: u64, reserved: u64, pnl_sum: i128, amount: u64) -> Option<u64>` | `deposited.checked_sub(amount)` gated by `amount <= free_collateral` **and** the equity gate `equity − amount >= reserved`, where `equity = deposited + pnl_sum` (saturating i128) |
 
 ## Vault token account
 
@@ -81,8 +84,11 @@ One PDA per `(market, user)`, seed
 2. [Design A] Convert any funded pending claim into `deposited` first
    (`claim_payout(...)` as above) — a claim is never directly withdrawable, only
    through this payout.
-3. Enforce `amount <= free_collateral(deposited, reserved)`
-   (`InsufficientFreeCollateral` otherwise).
+3. Compute `pnl_sum = Σ upnl` over the user's two sides (index-based; a
+   pristine/closed side contributes `0`) and enforce the free-collateral seam
+   **plus the equity gate**: `amount <= deposited − reserved` **and**
+   `equity − amount >= reserved`, where `equity = deposited + pnl_sum`
+   (`InsufficientFreeCollateral` otherwise — nothing moves).
 4. `token::transfer` `amount` USDC from the vault to the user's ATA (authority =
    the vault PDA, signing via `[VAULT_SEED, bump]`).
 5. `deposited -= amount` via `checked_sub` (`ArithmeticOverflow` on overflow).
@@ -100,6 +106,29 @@ collateral that still backs margin, and rejects an open whose margin shortfall
 would leave `reserved > deposited` — no new withdrawal path was needed. A
 missing ledger (no deposit yet) reports `InsufficientFreeCollateral` rather
 than an account-format error.
+
+## Withdraw equity gate (D9/REQ-A2-3)
+
+The free seam alone is not enough once unrealized PnL exists: a user could
+withdraw against free ledger balance while an open position bleeds value and
+leave the account under-margin. The gate therefore computes the **account
+equity** first:
+
+```
+equity_post = equity − amount     where equity = deposited + Σ upnl   (saturating i128)
+gate:  amount <= free_collateral  ∧  equity_post >= reserved
+```
+
+- `Σ upnl` is the index-based unrealized PnL over **both** sides of the
+  `(market, user)` account (`positions::pnl` per side; a pristine/missing side
+  contributes `0`). The handler reads it from the market-bound `index_source`.
+- Refusal is `InsufficientFreeCollateral` and the ledger + vault are untouched
+  (the gate runs before the transfer; the post-withdraw `deposited` is computed
+  up front).
+- `equity − amount == reserved` is allowed (the account sits exactly at the
+  initial-margin requirement); one microunit less fails.
+- The operator path (`operator_withdraw_collateral`) applies the **same gate**;
+  it can never pay anywhere but the subject's own ATA.
 
 ## Dependencies
 

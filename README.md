@@ -180,8 +180,10 @@ off-chain keeper, fuzz harness), the **perpetual market** account (`PerpMarket` 
 `initialize_market`), the **on-chain order book** (CLOB + mark/twap), the
 **collateral vault** (USDC deposit/withdraw), the **position lifecycle**
 (open/close long & short), the **funding engine** (anchor mark → index), the
-**trustless settlement** (`settle_close`, realized-yield PnL), and the
-**liquidation engine** (TWAP mark + penalty/liquidator incentive) are
+**trustless settlement** (`settle_close`, realized-yield PnL), the **operator
+delegation** surface (`set_operator` + the `operator_*` actions), and the
+**account-level liquidation engine** (cross-margin account health + TWAP
+reference + penalty/liquidator incentive) are
 implemented and tested; a **trader SDK** (`sdk/`), a **trader CLI** (`cli/`),
 and a **devnet deploy + e2e lifecycle script** (`scripts/`) are provided. The
 protocol has **not been audited** and is **not deployed to mainnet**. Do not use

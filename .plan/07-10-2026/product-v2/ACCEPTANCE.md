@@ -30,6 +30,14 @@ under `mkdtemp`; the real home, profile and repo data stay read-only for the who
 **Frozen-test amendments.** Main-agent-only register (`AMEND-PV-#`), each with a quoted
 measurement; see below.
 
+- `AMEND-PV-1` — `operator_cancel_order` event parity. The W1 shard omitted the `Cancel` event to
+  satisfy a frozen ring read ("a faithful mirror puts CANCEL at slot 0 and the fill at slot 1 —
+  observed failure `left: 1, right: 0`"); the main agent restored the event (parity with the
+  direct `cancel_order`; the server indexer folds this ring) and amended
+  `operator_cpi::operator_orders_attribute_to_the_user` to read the fill at slot 1 and
+  additionally pin the subject-attributed cancel event. Verified after: operator_cpi 8/8,
+  workspace 251P / 14F, zero new reds; `.so` sha 824300d3.
+
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this
 block FIRST after a compaction, a new session or a skill edit)
 
@@ -73,11 +81,11 @@ block FIRST after a compaction, a new session or a skill edit)
 - Holds / waivers: D6 (hedge-mode, no netting) + D17 (in-place deploy attempt) recorded as
   **defaulted — vetoable until implementation begins** (user not reached at plan time; first
   clarify round cancelled without answers)
-- Next action: **implement phase** (red→green shards): W1 program A1 (operator.rs + lib.rs handler
-  bodies + operator_cpi/operator:: greens) → W2 program A2 (account fns + liquidate + withdraw gate
-  greens) → W3 SDK (decoders/health/browser) → W4 server core (indexer/auth/faucet/operator/keeper)
-  → W5 server API/WS + openapi → W6 e2e walk + docs → full verdict. Impl-wave flags above apply.
-  Evidence dir: `~/.hermes/cache/scratch/fructus-run/evidence/`.
+- Next action: **IMPLEMENT — W1 ✓ W2 ✓ W3 ✓ W4 ✓ W5 ✓ (+ AMEND-PV-1)**. Rust 262P/3F; sdk 85/85;
+  server 38P/8F (W5 signal-verified by main agent: operator 1/1, keeper 1/1). **W6 (api/ws/e2e +
+  openapi populate) ∥ W7 (docs — the 4 doc-audit tests) dispatched** → then full verdict +
+  review phase. W5 notes: `KeeperOptions.keypairPath` required (wired from OPERATOR_KEYPAIR);
+  keeper decisions read indexed state (one-refresh lag, safe direction); `OperatorUnconfiguredError`.
 
 ## Run commands (each executed once before being written here — at red-baseline collection)
 

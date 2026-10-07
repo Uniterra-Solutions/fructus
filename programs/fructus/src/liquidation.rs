@@ -59,15 +59,8 @@ impl From<LiquidateError> for crate::FructusError {
 /// Account equity (REQ-A2-1/D6): `deposited + pnl_sum` as a signed `i128`,
 /// saturating at the `i128` extremes (hostile inputs can never panic). `pnl_sum`
 /// is the signed Σ unrealized PnL over both sides (`positions::pnl` per side).
-///
-/// STUB: returns `0` — the saturating sum lands with the account-level
-/// implementation task; the red `account_health_is_equity_vs_total_maintenance`
-/// property test below pins the contract.
 pub fn account_equity(deposited: u64, pnl_sum: i128) -> i128 {
-    // STUB: `(deposited as i128).saturating_add(pnl_sum)` arrives with the
-    // cross-margin implementation task.
-    let _ = (deposited, pnl_sum);
-    0
+    (deposited as i128).saturating_add(pnl_sum)
 }
 
 /// The account-level cross-margin requirement: the **checked sum** of both
@@ -76,15 +69,8 @@ pub fn account_equity(deposited: u64, pnl_sum: i128) -> i128 {
 /// (total on `u64 × u16`); `None` only when the `u64` sum itself overflows.
 /// `bps` is the initial ratio for the open/withdraw gate and the maintenance
 /// ratio for the liquidation trigger.
-///
-/// STUB: returns `Some(0)` — the checked two-side sum lands with the
-/// account-level implementation task; the red `account_margin_sums_both_sides`
-/// property test below pins the contract.
 pub fn account_margin_required(n_long: u64, n_short: u64, bps: u16) -> Option<u64> {
-    // STUB: the checked two-side ceiling sum arrives with the cross-margin
-    // implementation task.
-    let _ = (n_long, n_short, bps);
-    Some(0)
+    margin_required(n_long, bps)?.checked_add(margin_required(n_short, bps)?)
 }
 
 /// Whether the ACCOUNT is liquidatable (REQ-A2-1/REQ-A2-2): the account has
@@ -92,11 +78,6 @@ pub fn account_margin_required(n_long: u64, n_short: u64, bps: u16) -> Option<u6
 /// maintenance_bps)` — a **strict** `<` (equality is healthy). A zero-exposure
 /// account is never liquidatable. `None` only when the requirement sum
 /// overflows `u64`.
-///
-/// STUB: returns `Some(false)` — the account-level predicate lands with the
-/// account-level implementation task; the red
-/// `account_health_is_equity_vs_total_maintenance` property test below pins the
-/// contract.
 pub fn account_liquidatable(
     deposited: u64,
     pnl_sum: i128,
@@ -104,10 +85,14 @@ pub fn account_liquidatable(
     n_short: u64,
     maintenance_bps: u16,
 ) -> Option<bool> {
-    // STUB: the zero-exposure short-circuit + `equity < total requirement`
-    // arrives with the cross-margin implementation task.
-    let _ = (deposited, pnl_sum, n_long, n_short, maintenance_bps);
-    Some(false)
+    // No exposure => never liquidatable (the short-circuit). Checked first so
+    // the zero-exposure answer is total even when both ceilings are degenerate.
+    if n_long == 0 && n_short == 0 {
+        return Some(false);
+    }
+    let required = account_margin_required(n_long, n_short, maintenance_bps)?;
+    // Strict `<`: an exactly-maintained account is healthy.
+    Some(account_equity(deposited, pnl_sum) < required as i128)
 }
 
 /// The account loss booked into the PnL pool by a liquidation:
@@ -115,15 +100,14 @@ pub fn account_liquidatable(
 /// convention, independent of the caller's seam clamp
 /// (`settlement::apply_liquidation_loss` caps the booked amount at
 /// `deposited − reserved_after − reward`).
-///
-/// STUB: returns `0` — the booked-loss magnitude lands with the account-level
-/// implementation task; the red `account_loss_booked_is_max_zero_negative_pnl`
-/// property test below pins the contract.
 pub fn account_liquidation_loss(pnl_sum: i128) -> u64 {
-    // STUB: `pnl_sum.unsigned_abs().min(u64::MAX as u128) as u64` when negative,
-    // else 0, arrives with the cross-margin implementation task.
-    let _ = pnl_sum;
-    0
+    if pnl_sum < 0 {
+        // `unsigned_abs` never panics (it covers `i128::MIN`), and the `min`
+        // saturates the magnitude at `u64::MAX`.
+        pnl_sum.unsigned_abs().min(u64::MAX as u128) as u64
+    } else {
+        0
+    }
 }
 
 /// The liquidator penalty on `collateral` at `penalty_bps`: ceiling division

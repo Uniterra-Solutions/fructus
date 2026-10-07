@@ -64,7 +64,7 @@ to build for accounts above it.
 - Runner: `cargo nextest run` (profile pinned in `.config/nextest.toml`); `cargo test` is
   the fallback and the doctest runner — this workspace has no doctests.
 - Pure logic → `proptest` invariants in `programs/fructus/src/tests.rs` and the
-  per-module `#[cfg(test)]` blocks (funding/liquidation/positions/collateral);
+  per-module `#[cfg(test)]` blocks (funding/liquidation/positions/collateral/operator);
   adapter-level invariants that drive the lib.rs `apply_open_fills`/
   `apply_close_fills` helpers live in `tests.rs`.
 - Property-test cases are declared per block (`#![proptest_config(...)]`): 64 is the

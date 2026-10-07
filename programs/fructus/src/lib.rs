@@ -884,7 +884,7 @@ fn verify_collateral_pda(
     Ok(())
 }
 
-/// STUB: read the `(operator, market, user)` fields of an `Operator` record
+/// Read the `(operator, market, user)` fields of an `Operator` record
 /// account for the `operator_*` authorization check (REQ-A1-6).
 ///
 /// A pristine (empty) PDA decodes to the all-default tuple — the "no record"
@@ -897,6 +897,50 @@ fn operator_record_fields(record: &UncheckedAccount) -> Result<(Pubkey, Pubkey, 
     let data = record.try_borrow_data()?;
     let decoded = Operator::try_deserialize(&mut &data[..])?;
     Ok((decoded.operator, decoded.market, decoded.user))
+}
+
+/// Index-based unrealized PnL of one side's `Position` PDA, for the withdraw
+/// equity gate's `Σ upnl` term (REQ-A2-3/D9).
+///
+/// A pristine (empty) or closed (`notional == 0`) side contributes zero; a
+/// live program-owned position is priced with [`positions::pnl`] against the
+/// live pool rate. A non-program-owned account at the PDA (a squat the program
+/// can never reclaim) or a program-owned account whose stored
+/// market/owner/side does not match its derivation is account-data corruption
+/// (`ProgramError::InvalidAccountData`) — never silently counted as zero.
+fn side_unrealized_pnl<'info>(
+    position: &'info UncheckedAccount<'info>,
+    market: &Pubkey,
+    owner: &Pubkey,
+    side: positions::PositionSide,
+    rate: &ExchangeRate,
+) -> Result<i128> {
+    if position.data_is_empty() {
+        return Ok(0);
+    }
+    if position.owner != &crate::ID {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    let side_byte = match side {
+        positions::PositionSide::Long => SIDE_BID,
+        positions::PositionSide::Short => SIDE_ASK,
+    };
+    let position = Account::<Position>::try_from_unchecked(position.as_ref())?;
+    if position.market != *market || position.owner != *owner || position.side != side_byte {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    if position.notional == 0 {
+        return Ok(0);
+    }
+    Ok(positions::pnl(
+        position.entry_n_sum,
+        position.entry_d_sum,
+        rate.total_lamports,
+        rate.pool_token_supply,
+        position.notional,
+        side,
+    )
+    .ok_or(FructusError::ArithmeticOverflow)?)
 }
 
 declare_id!("3EsUd5XQ6KChedwL2ho8pv3zrrGGFvMpJEV1PnzN8MD1");
@@ -1352,8 +1396,13 @@ pub mod fructus {
     }
 
     /// Withdraw `amount` USDC from the vault to the user's ATA, gated by the
-    /// free-collateral seam (`amount <= deposited - reserved`).
-    pub fn withdraw_collateral(ctx: Context<WithdrawCollateral>, amount: u64) -> Result<()> {
+    /// free-collateral seam (`amount <= deposited - reserved`) AND the
+    /// account-level equity gate (`equity - amount >= reserved`, where
+    /// `equity = deposited + Σ upnl` over both sides; REQ-A2-3/D9).
+    pub fn withdraw_collateral<'info>(
+        ctx: Context<'info, WithdrawCollateral<'info>>,
+        amount: u64,
+    ) -> Result<()> {
         require!(amount != 0, FructusError::InvalidSize);
         require!(
             !ctx.accounts.vault.data_is_empty(),
@@ -1376,15 +1425,36 @@ pub mod fructus {
         user_collateral.claimable = new_claimable;
         ctx.accounts.market.pnl_pool = new_pool;
 
-        // Enforce the free-collateral seam (`amount <= deposited - reserved`),
-        // computing the post-withdraw balance up front so the ledger is debited
-        // only after the transfer.
-        // STUB: `pnl_sum = 0` — the Σ upnl equity gate lands with the
-        // cross-margin task (REQ-A2-3).
+        // Σ unrealized PnL (index-based) over both of the user's sides — the
+        // equity half of the withdraw gate (REQ-A2-3): a pristine/closed side
+        // contributes zero.
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let pnl_sum = side_unrealized_pnl(
+            &ctx.accounts.position_long,
+            &market_key,
+            &user_key,
+            positions::PositionSide::Long,
+            &rate,
+        )?
+        .checked_add(side_unrealized_pnl(
+            &ctx.accounts.position_short,
+            &market_key,
+            &user_key,
+            positions::PositionSide::Short,
+            &rate,
+        )?)
+        .ok_or(FructusError::ArithmeticOverflow)?;
+
+        // Enforce the free-collateral seam (`amount <= deposited - reserved`)
+        // plus the equity gate (`equity - amount >= reserved`), computing the
+        // post-withdraw balance up front so the ledger is debited only after
+        // the transfer.
         let new_deposited = collateral::withdraw(
             user_collateral.deposited,
             user_collateral.reserved,
-            0,
+            pnl_sum,
             amount,
         )
         .ok_or(FructusError::InsufficientFreeCollateral)?;
@@ -1413,14 +1483,66 @@ pub mod fructus {
     /// Delegate (or rotate / revoke) the `operator` key for the signer's
     /// `(market, user)` record: `Pubkey::default()` stores the revoke state.
     ///
-    /// STUB: the lazy-create / overwrite / revoke transition (REQ-A1-2) lands
-    /// with the operator implementation task — the body writes nothing yet;
-    /// the bank suite `operator_cpi` pins the full behaviour.
+    /// Lazily creates the record on the first call (payer = user, rent-exempt,
+    /// `8 + Operator::LEN`, bump stored); an existing program-owned record is
+    /// overwritten (rotate) and the revoke state writes like any other
+    /// delegation — the account is never closed. A non-program-owned,
+    /// non-pristine account squatting the PDA is rejected with
+    /// [`FructusError::OperatorPdaSquatted`] and never reclaimed: Solana
+    /// forbids a program from mutating an account it does not own.
     pub fn set_operator<'info>(
         ctx: Context<'info, SetOperator<'info>>,
         operator: Pubkey,
     ) -> Result<()> {
-        let _ = (&ctx, operator);
+        let record_info = &ctx.accounts.operator_record;
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
+
+        // "Needs creation" means the PDA is still a pristine system account —
+        // empty data, system-owned, zero lamports (F5): an attacker-created
+        // account at the PDA (with data, or rent-funded but empty) must not be
+        // mistaken for never-created.
+        if record_info.data_is_empty()
+            && record_info.owner == &system_program::ID
+            && record_info.lamports() == 0
+        {
+            let rent = Rent::get()?;
+            let space = 8 + Operator::LEN;
+            let bump = ctx.bumps.operator_record;
+            let seeds: &[&[u8]] = &[
+                OPERATOR_SEED,
+                market_key.as_ref(),
+                user_key.as_ref(),
+                &[bump],
+            ];
+            system_program::create_account(
+                CpiContext::new(
+                    ctx.accounts.system_program.key(),
+                    system_program::CreateAccount {
+                        from: ctx.accounts.user.to_account_info(),
+                        to: record_info.to_account_info(),
+                    },
+                )
+                .with_signer(&[seeds]),
+                rent.minimum_balance(space),
+                space as u64,
+                &crate::ID,
+            )?;
+        } else if record_info.owner != &crate::ID {
+            // A non-program-owned squat of the record PDA: reject with the
+            // dedicated error so the brick is diagnosable instead of surfacing
+            // as a generic owner mismatch.
+            return Err(FructusError::OperatorPdaSquatted.into());
+        }
+
+        // Create / rotate / revoke: always (re)write the full record. Revoke
+        // is the all-default `operator` field — the record account is kept.
+        let mut record = Account::<Operator>::try_from_unchecked(record_info.as_ref())?;
+        record.market = market_key;
+        record.user = user_key;
+        record.operator = operator;
+        record.bump = ctx.bumps.operator_record;
+        record.exit(&crate::ID)?;
         Ok(())
     }
 
@@ -1428,29 +1550,126 @@ pub mod fructus {
     /// ATA into the vault (the bound `Operator` PDA as the SPL delegate) and
     /// credit the subject's ledger — no user signature (D4).
     ///
-    /// STUB: the authorization check only — no ledger credit and no SPL
-    /// transfer yet (REQ-A1-3 lands with the operator implementation task);
-    /// the bank suite `operator_cpi` pins the full behaviour.
+    /// Mirrors the direct `deposit_collateral` exactly: the ledger is lazily
+    /// created on first deposit (payer = operator signer), any funded pending
+    /// claim is converted first (`claim_payout`), the credit is checked
+    /// arithmetic and the vault transfer is signed by the Operator PDA via
+    /// `invoke_signed` (the SPL delegate the user approved at bind time). The
+    /// signer must be the record's live delegate (`OperatorUnauthorized`
+    /// otherwise); a missing/short SPL approval propagates the token
+    /// program's error and no ledger mutation persists.
     pub fn operator_deposit_collateral<'info>(
         ctx: Context<'info, OperatorDepositCollateral<'info>>,
         amount: u64,
     ) -> Result<()> {
-        let _ = amount;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        require!(amount != 0, FructusError::InvalidSize);
+        require!(
+            !ctx.accounts.vault.data_is_empty(),
+            FructusError::VaultNotInitialized
+        );
+
+        // `user_ata` is an `UncheckedAccount` in this struct (the account set
+        // mirrors the PRD Appendix), so the mint + subject-owner binding the
+        // direct path expresses with Anchor constraints is validated in-handler
+        // before any transfer.
+        let user_ata = Account::<TokenAccount>::try_from(ctx.accounts.user_ata.as_ref())?;
+        require!(
+            user_ata.mint == ctx.accounts.market.collateral_mint,
+            FructusError::InvalidMint
+        );
+        if user_ata.owner != user_key {
+            return Err(ProgramError::InvalidAccountData.into());
+        }
+
+        // Lazily create the per-(market, user) ledger on first deposit
+        // (payer = operator signer, mirroring `deposit_collateral`).
+        let was_empty = ctx.accounts.user_collateral.data_is_empty();
+        if was_empty {
+            let rent = Rent::get()?;
+            let space = 8 + UserCollateral::LEN;
+            let bump = ctx.bumps.user_collateral;
+            let seeds: &[&[u8]] = &[
+                USER_COLLATERAL_SEED,
+                market_key.as_ref(),
+                user_key.as_ref(),
+                &[bump],
+            ];
+            system_program::create_account(
+                CpiContext::new(
+                    ctx.accounts.system_program.key(),
+                    system_program::CreateAccount {
+                        from: ctx.accounts.operator.to_account_info(),
+                        to: ctx.accounts.user_collateral.to_account_info(),
+                    },
+                )
+                .with_signer(&[seeds]),
+                rent.minimum_balance(space),
+                space as u64,
+                &crate::ID,
+            )?;
+        }
+
+        // Move `amount` USDC from the subject's ATA into the vault, signed by
+        // the Operator PDA (the SPL delegate approved by the subject at bind
+        // time).
+        let bump = ctx.bumps.operator_record;
+        let seeds: &[&[u8]] = &[
+            OPERATOR_SEED,
+            market_key.as_ref(),
+            user_key.as_ref(),
+            &[bump],
+        ];
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                token::Transfer {
+                    from: ctx.accounts.user_ata.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                    authority: ctx.accounts.operator_record.to_account_info(),
+                },
+            )
+            .with_signer(&[seeds]),
+            amount,
+        )?;
+
+        // Credit the subject's ledger (claim-payout then checked credit);
+        // atomic — any error unwinds the whole instruction.
+        let mut user_collateral =
+            Account::<UserCollateral>::try_from_unchecked(ctx.accounts.user_collateral.as_ref())?;
+        user_collateral.bump = ctx.bumps.user_collateral;
+        if was_empty {
+            // [fix A] a fresh ledger starts with no pending claim.
+            user_collateral.claimable = 0;
+        }
+        let (claimed_deposited, new_claimable, new_pool) = settlement::claim_payout(
+            user_collateral.deposited,
+            user_collateral.claimable,
+            ctx.accounts.market.pnl_pool,
+        )
+        .ok_or(FructusError::ArithmeticOverflow)?;
+        let deposited = collateral::deposit(claimed_deposited, amount)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+        user_collateral.deposited = deposited;
+        user_collateral.claimable = new_claimable;
+        ctx.accounts.market.pnl_pool = new_pool;
+        user_collateral.exit(&crate::ID)?;
+
         Ok(())
     }
 
@@ -1458,29 +1677,116 @@ pub mod fructus {
     /// subject `user`'s own ATA only (mint + owner checked in-handler; D5),
     /// gated by the same equity gate as the direct path.
     ///
-    /// STUB: the authorization check only — no equity gate and no SPL transfer
-    /// yet (REQ-A1-4 lands with the operator implementation task); the bank
-    /// suite `operator_cpi` pins the full behaviour.
+    /// Mirrors the direct `withdraw_collateral`: any funded pending claim is
+    /// converted first, the `Σ upnl` over the subject's two sides (pristine /
+    /// closed ⇒ zero) is passed to [`collateral::withdraw`] together with the
+    /// ledger's `reserved`, and the vault → subject transfer is signed by the
+    /// vault PDA. The operator can never redirect funds: the destination must
+    /// be the subject's own token account for the market's collateral mint.
     pub fn operator_withdraw_collateral<'info>(
         ctx: Context<'info, OperatorWithdrawCollateral<'info>>,
         amount: u64,
     ) -> Result<()> {
-        let _ = amount;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        require!(amount != 0, FructusError::InvalidSize);
+        require!(
+            !ctx.accounts.vault.data_is_empty(),
+            FructusError::VaultNotInitialized
+        );
+
+        // The destination must be the SUBJECT's own token account for the
+        // market's collateral mint: tokens can never reach a foreign account.
+        // `user_ata` is an `UncheckedAccount` in this struct (the account set
+        // mirrors the PRD Appendix), so the binding is validated in-handler
+        // before any transfer.
+        let user_ata = Account::<TokenAccount>::try_from(ctx.accounts.user_ata.as_ref())?;
+        require!(
+            user_ata.mint == ctx.accounts.market.collateral_mint,
+            FructusError::InvalidMint
+        );
+        if user_ata.owner != user_key {
+            return Err(ProgramError::InvalidAccountData.into());
+        }
+
+        let user_collateral = &mut ctx.accounts.user_collateral;
+
+        // [fix A] Convert any funded pending claim into deposited BEFORE the
+        // gate, so claims become withdrawable collateral (mirrors the direct
+        // path).
+        let (claimed_deposited, new_claimable, new_pool) = settlement::claim_payout(
+            user_collateral.deposited,
+            user_collateral.claimable,
+            ctx.accounts.market.pnl_pool,
+        )
+        .ok_or(FructusError::ArithmeticOverflow)?;
+        user_collateral.deposited = claimed_deposited;
+        user_collateral.claimable = new_claimable;
+        ctx.accounts.market.pnl_pool = new_pool;
+
+        // Σ unrealized PnL (index-based) over both of the subject's sides —
+        // the equity half of the withdraw gate (REQ-A2-3).
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let pnl_sum = side_unrealized_pnl(
+            &ctx.accounts.position_long,
+            &market_key,
+            &user_key,
+            positions::PositionSide::Long,
+            &rate,
+        )?
+        .checked_add(side_unrealized_pnl(
+            &ctx.accounts.position_short,
+            &market_key,
+            &user_key,
+            positions::PositionSide::Short,
+            &rate,
+        )?)
+        .ok_or(FructusError::ArithmeticOverflow)?;
+
+        // Enforce the free-collateral seam + equity gate, computing the
+        // post-withdraw balance up front so the ledger is debited only after
+        // the transfer.
+        let new_deposited = collateral::withdraw(
+            user_collateral.deposited,
+            user_collateral.reserved,
+            pnl_sum,
+            amount,
+        )
+        .ok_or(FructusError::InsufficientFreeCollateral)?;
+
+        // Move `amount` USDC from the vault to the subject's ATA (the vault
+        // PDA signs, mirroring the direct path).
+        let bump = ctx.bumps.vault;
+        let seeds: &[&[u8]] = &[VAULT_SEED, &[bump]];
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                token::Transfer {
+                    from: ctx.accounts.vault.to_account_info(),
+                    to: ctx.accounts.user_ata.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+            )
+            .with_signer(&[seeds]),
+            amount,
+        )?;
+
+        user_collateral.deposited = new_deposited;
+
         Ok(())
     }
 
@@ -1490,10 +1796,11 @@ pub mod fructus {
     /// `open_position`; the position is attributed to the subject
     /// (`position.owner = user`).
     ///
-    /// STUB: argument validation and the authorization check only — no book
-    /// mutation and no account writes yet (REQ-A1-5 lands with the operator
-    /// implementation task); the bank suite `operator_cpi` pins the full
-    /// behaviour.
+    /// Mirrors the direct handler exactly: the order carries the subject as
+    /// its owner, the position PDA is the subject's (lazily created on first
+    /// fill, payer = operator signer), the subject's ledger must pre-exist
+    /// (`InsufficientFreeCollateral` otherwise) and the taker fills settle
+    /// inline against the subject's notional / entry sums / reserved margin.
     pub fn operator_open_position<'info>(
         ctx: Context<'info, OperatorOpenPosition<'info>>,
         side: u8,
@@ -1501,22 +1808,121 @@ pub mod fructus {
         price: u64,
     ) -> Result<()> {
         positions::validate_open_args(side, size)?;
-        let _ = price;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        let side = side_from_u8(side)?;
+        // Everything is attributed to the SUBJECT: the order owner, the
+        // position PDA seed and the margin ledger.
+        let owner = user_key;
+        // The index snapshot is read once per tx (same slot ⇒ same rate) and
+        // stamped onto every Fill this order produces (FR-6/D8).
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let mut account = ctx.accounts.order_book.load_mut()?;
+        let now_slot = Clock::get()?.slot;
+
+        let mut book = load_book(&account);
+        let seq = take_next_seq(&mut book)?;
+        let incoming = orderbook::Order {
+            owner,
+            side,
+            price,
+            size,
+            seq,
+        };
+        let fills = match_open_taker(
+            &mut account,
+            &mut book,
+            incoming,
+            rate.total_lamports,
+            rate.pool_token_supply,
+        )?;
+
+        if !fills.is_empty() {
+            // Lazily create the subject's per-(market, user, side) `Position`
+            // on first fill (mirror `open_position`; payer = operator signer).
+            // "Needs creation" means the PDA is still a pristine system
+            // account — empty data, system-owned, zero lamports (F5).
+            if ctx.accounts.position.data_is_empty()
+                && ctx.accounts.position.owner == &system_program::ID
+                && ctx.accounts.position.lamports() == 0
+            {
+                let rent = Rent::get()?;
+                let space = 8 + Position::LEN;
+                let side_byte = side_to_u8(side);
+                let bump = ctx.bumps.position;
+                let seeds: &[&[u8]] = &[
+                    POSITION_SEED,
+                    market_key.as_ref(),
+                    owner.as_ref(),
+                    &[side_byte],
+                    &[bump],
+                ];
+                system_program::create_account(
+                    CpiContext::new(
+                        ctx.accounts.system_program.key(),
+                        system_program::CreateAccount {
+                            from: ctx.accounts.operator.to_account_info(),
+                            to: ctx.accounts.position.to_account_info(),
+                        },
+                    )
+                    .with_signer(&[seeds]),
+                    rent.minimum_balance(space),
+                    space as u64,
+                    &crate::ID,
+                )?;
+            } else if ctx.accounts.position.owner != &crate::ID {
+                return Err(FructusError::PositionPdaSquatted.into());
+            }
+
+            // The ledger must pre-exist (D13): a missing `UserCollateral` is a
+            // free-collateral error (REQ-7), not an account-format error.
+            require!(
+                !ctx.accounts.user_collateral.data_is_empty(),
+                FructusError::InsufficientFreeCollateral
+            );
+
+            // Settle the taker's fills inline (D2) on the SUBJECT's position +
+            // ledger: notional, entry sums, and reserved margin update
+            // atomically or the tx reverts.
+            let mut position =
+                Account::<Position>::try_from_unchecked(ctx.accounts.position.as_ref())?;
+            position.bump = ctx.bumps.position;
+            position.market = market_key;
+            position.owner = owner;
+            position.side = side_to_u8(side);
+            let mut user_collateral = Account::<UserCollateral>::try_from_unchecked(
+                ctx.accounts.user_collateral.as_ref(),
+            )?;
+            apply_open_fills(
+                &mut position,
+                &mut user_collateral,
+                ctx.accounts.market.initial_margin_bps,
+                &fills,
+                rate.total_lamports,
+                rate.pool_token_supply,
+                now_slot,
+                ctx.accounts.market.funding_epoch_slots,
+            )?;
+            position.exit(&crate::ID)?;
+            user_collateral.exit(&crate::ID)?;
+        }
+
+        save_book(&mut account, &book);
+        record_observation(&mut account, orderbook::mid(&book), now_slot);
         Ok(())
     }
 
@@ -1524,32 +1930,95 @@ pub mod fructus {
     /// (0 = Long, 1 = Short), with the operator as the only signer (D2) — same
     /// core logic as the direct `close_position`.
     ///
-    /// STUB: argument validation and the authorization check only — no book
-    /// mutation and no account writes yet (REQ-A1-5 lands with the operator
-    /// implementation task); the bank suite `operator_cpi` pins the full
-    /// behaviour.
+    /// Mirrors the direct handler exactly: the market-IOC order on the
+    /// opposite side is attributed to the subject, the position must be a live
+    /// program-owned account (`PositionNotFound` / `PositionPdaSquatted`), and
+    /// the subject's ledger releases the margin of the closed notional.
     pub fn operator_close_position<'info>(
         ctx: Context<'info, OperatorClosePosition<'info>>,
         side: u8,
         size: u64,
     ) -> Result<()> {
         require!(size != 0, FructusError::InvalidSize);
-        let _ = side;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        let side = side_from_u8(side)?;
+        let owner = user_key;
+        // The index snapshot is read once per tx and stamped onto every Fill
+        // this order produces (FR-6/D8).
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let mut account = ctx.accounts.order_book.load_mut()?;
+        let now_slot = Clock::get()?.slot;
+
+        // The position must exist and be live before any book mutation (FR-4).
+        // "Exists" means a real program-owned `Position` account: a
+        // system-owned squat at the PDA is distinguished from a never-opened
+        // position with the dedicated `PositionPdaSquatted` error (F2/F5).
+        if ctx.accounts.position.owner != &crate::ID {
+            if ctx.accounts.position.data_is_empty() {
+                return Err(FructusError::PositionNotFound.into());
+            }
+            return Err(FructusError::PositionPdaSquatted.into());
+        }
+        let mut position = Account::<Position>::try_from_unchecked(ctx.accounts.position.as_ref())?;
+        require!(position.notional > 0, FructusError::PositionNotFound);
+        require!(size <= position.notional, FructusError::InvalidCloseSize);
+
+        let mut book = load_book(&account);
+        let seq = take_next_seq(&mut book)?;
+        let incoming = orderbook::Order {
+            owner,
+            side: opposite(side),
+            price: 0,
+            size,
+            seq,
+        };
+        // Market (IOC) on the opposite side: matches to exhaustion, remainder
+        // cancelled, never posted (see `place_market_order`). Fills rest on
+        // the position's own side, so their events carry `side` as the maker
+        // side.
+        let outcome =
+            orderbook::match_order(&mut book, incoming, orderbook::OrderKind::Market, u64::MAX);
+        emit_fill_events(
+            &mut account,
+            &outcome.fills,
+            side,
+            rate.total_lamports,
+            rate.pool_token_supply,
+        )?;
+
+        if !outcome.fills.is_empty() {
+            // The subject's ledger backs the position's reserved margin, so it
+            // must exist; releasing reservation never fails (D11 exact-sum).
+            let mut user_collateral = Account::<UserCollateral>::try_from_unchecked(
+                ctx.accounts.user_collateral.as_ref(),
+            )?;
+            apply_close_fills(
+                &mut position,
+                &mut user_collateral,
+                ctx.accounts.market.initial_margin_bps,
+                &outcome.fills,
+            )?;
+            position.exit(&crate::ID)?;
+            user_collateral.exit(&crate::ID)?;
+        }
+
+        save_book(&mut account, &book);
+        record_observation(&mut account, orderbook::mid(&book), now_slot);
         Ok(())
     }
 
@@ -1557,10 +2026,6 @@ pub mod fructus {
     /// `user`, with the operator as the only signer (D2) — same core logic as
     /// the direct `place_limit_order`; the resting order is attributed to the
     /// subject (`order.owner = user`).
-    ///
-    /// STUB: argument validation and the authorization check only — no book
-    /// mutation yet (REQ-A1-5 lands with the operator implementation task);
-    /// the bank suite `operator_cpi` pins the full behaviour.
     pub fn operator_place_limit_order<'info>(
         ctx: Context<'info, OperatorPlaceLimitOrder<'info>>,
         side: u8,
@@ -1569,54 +2034,123 @@ pub mod fructus {
     ) -> Result<()> {
         require!(price != 0, FructusError::InvalidPrice);
         require!(size != 0, FructusError::InvalidSize);
-        let _ = side;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        let side = side_from_u8(side)?;
+        // The resting order is attributed to the SUBJECT.
+        let owner = user_key;
+        // The index snapshot is read once per tx (same slot ⇒ same rate) and
+        // stamped onto every Fill this order produces (FR-6/D8).
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let mut account = ctx.accounts.order_book.load_mut()?;
+        let now_slot = Clock::get()?.slot;
+
+        let mut book = load_book(&account);
+        let seq = take_next_seq(&mut book)?;
+        let incoming = orderbook::Order {
+            owner,
+            side,
+            price,
+            size,
+            seq,
+        };
+
+        if !orderbook::would_cross(&book, &incoming) {
+            // Non-crossing: rest at the limit price.
+            orderbook::post_limit(&mut book, incoming)?;
+            save_book(&mut account, &book);
+            record_observation(&mut account, orderbook::mid(&book), now_slot);
+            return Ok(());
+        }
+
+        // Crossing: match inline; never rest a crossing order (mirrors the
+        // direct handler).
+        match_limit_taker(
+            &mut account,
+            &mut book,
+            incoming,
+            rate.total_lamports,
+            rate.pool_token_supply,
+        )?;
+        save_book(&mut account, &book);
+        record_observation(&mut account, orderbook::mid(&book), now_slot);
         Ok(())
     }
 
     /// Operator-signed market order: cross the opposite book for the subject
     /// `user` (IOC), with the operator as the only signer (D2) — same core
     /// logic as the direct `place_market_order`.
-    ///
-    /// STUB: argument validation and the authorization check only — no book
-    /// mutation yet (REQ-A1-5 lands with the operator implementation task);
-    /// the bank suite `operator_cpi` pins the full behaviour.
     pub fn operator_place_market_order<'info>(
         ctx: Context<'info, OperatorPlaceMarketOrder<'info>>,
         side: u8,
         size: u64,
     ) -> Result<()> {
         require!(size != 0, FructusError::InvalidSize);
-        let _ = side;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        let side = side_from_u8(side)?;
+        // The taker fill events are attributed to the SUBJECT.
+        let owner = user_key;
+        // The index snapshot is read once per tx (same slot ⇒ same rate) and
+        // stamped onto every Fill this order produces (FR-6/D8).
+        let rate = read_stake_pool(&ctx.accounts.index_source)?;
+        let mut account = ctx.accounts.order_book.load_mut()?;
+        let now_slot = Clock::get()?.slot;
+
+        let mut book = load_book(&account);
+        let seq = take_next_seq(&mut book)?;
+        let incoming = orderbook::Order {
+            owner,
+            side,
+            price: 0,
+            size,
+            seq,
+        };
+        let maker_side = opposite(side);
+
+        // A market order matches to exhaustion (see `place_market_order` for
+        // the budget reasoning); `Market` is IOC, so any unfilled remainder
+        // (book exhausted) is simply cancelled, never posted.
+        let outcome =
+            orderbook::match_order(&mut book, incoming, orderbook::OrderKind::Market, u64::MAX);
+        emit_fill_events(
+            &mut account,
+            &outcome.fills,
+            maker_side,
+            rate.total_lamports,
+            rate.pool_token_supply,
+        )?;
+
+        save_book(&mut account, &book);
+        record_observation(&mut account, orderbook::mid(&book), now_slot);
         Ok(())
     }
 
@@ -1624,29 +2158,52 @@ pub mod fructus {
     /// the operator as the only signer (D2) — same core logic as the direct
     /// `cancel_order` (owner-only becomes operator-for-subject).
     ///
-    /// STUB: the authorization check only — no book mutation yet (REQ-A1-5
-    /// lands with the operator implementation task); the bank suite
-    /// `operator_cpi` pins the full behaviour.
+    /// Appends the subject-attributed `Cancel` event exactly like the direct
+    /// `cancel_order` (event parity for indexers and consumers; AMEND-PV-1
+    /// restored this after the W1 shard had omitted it to satisfy a
+    /// frozen-test ring read — the test now reads the fill at its actual slot
+    /// and pins the cancel event too).
     pub fn operator_cancel_order<'info>(
         ctx: Context<'info, OperatorCancelOrder<'info>>,
         seq: u64,
     ) -> Result<()> {
-        let _ = seq;
         let (record_operator, record_market, record_user) =
             operator_record_fields(&ctx.accounts.operator_record)?;
         let signer = ctx.accounts.operator.key();
-        let market = ctx.accounts.market.key();
-        let user = ctx.accounts.user.key();
+        let market_key = ctx.accounts.market.key();
+        let user_key = ctx.accounts.user.key();
         if !crate::operator::authorized(
             &signer,
             &record_operator,
             &record_market,
             &record_user,
-            &market,
-            &user,
+            &market_key,
+            &user_key,
         ) {
             return Err(FructusError::OperatorUnauthorized.into());
         }
+
+        // Only the SUBJECT's resting orders can be cancelled.
+        let owner = user_key;
+        let mut account = ctx.accounts.order_book.load_mut()?;
+        let now_slot = Clock::get()?.slot;
+
+        let mut book = load_book(&account);
+        let removed = orderbook::cancel(&mut book, owner, seq)?;
+
+        append_event(
+            &mut account,
+            EVENT_KIND_CANCEL,
+            owner,
+            Pubkey::default(),
+            side_to_u8(removed.side),
+            removed.price,
+            removed.size,
+            0,
+            0,
+        );
+        save_book(&mut account, &book);
+        record_observation(&mut account, orderbook::mid(&book), now_slot);
         Ok(())
     }
 
@@ -2231,10 +2788,13 @@ pub mod fructus {
     /// closes the targeted exposure. Neither partial nor full liquidations
     /// create value out of thin air.
     ///
-    /// STUB: the trigger is evaluated over both sides and the transition is
-    /// computed, but **no account is written** yet — the account-level state
-    /// writes land with the cross-margin implementation task; the bank suite
-    /// `positions_cpi` pins the full behaviour.
+    /// On success the handler writes the account-level transition:
+    /// `position.collateral := min(m(n − amount, initial_margin_bps),
+    /// position.collateral)` and `position.notional −= amount` on the targeted
+    /// side (the `other_position` account is never touched), releases
+    /// `position_collateral − remaining` from the victim's `reserved`, debits
+    /// the victim's `deposited` by the booked loss + the reward, credits the
+    /// pool with the booked loss and the liquidator's ledger with the reward.
     pub fn liquidate<'info>(
         ctx: Context<'info, Liquidate<'info>>,
         side: u8,
@@ -2379,12 +2939,15 @@ pub mod fructus {
         .unwrap_or(false);
         require!(account_liquidatable, FructusError::NotLiquidatable);
 
-        // STUB: the account loss and the per-side release/reward transition are
-        // computed and discarded — NO account is written yet. The account-level
-        // state writes (targeted position, victim reserved/deposited, pnl_pool,
-        // liquidator ledger) land with the cross-margin implementation task.
-        let _ = liquidation::account_liquidation_loss(pnl_sum);
-        let _ = liquidation::apply_liquidation(
+        // Account-level transition (D8): release the targeted side's margin
+        // backing at the INITIAL margin ratio via `apply_liquidation` (the
+        // keeper of the `position.collateral == margin_required(notional,
+        // initial_margin_bps)` invariant — `amount == 0` / `amount > notional`
+        // are rejected there), pay the liquidator the penalty share of the
+        // freed collateral, book the account loss `max(0, −Σ upnl)` into the
+        // PnL pool with the `deposited − reserved_after − reward` seam clamp,
+        // and debit the victim by the booked loss + the reward.
+        let (remaining, reward) = liquidation::apply_liquidation(
             position.collateral,
             position.notional,
             amount,
@@ -2392,6 +2955,52 @@ pub mod fructus {
             LIQUIDATION_PENALTY_BPS,
         )
         .map_err(FructusError::from)?;
+        let released = position.collateral.saturating_sub(remaining);
+        // The surviving `reserved` is exactly Σ_side m(n_i, initial_margin_bps):
+        // the targeted side keeps `remaining`, the other side is untouched.
+        let reserved_after = ctx
+            .accounts
+            .user_collateral
+            .reserved
+            .checked_sub(released)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+        let loss = liquidation::account_liquidation_loss(pnl_sum);
+        let (victim_after_loss, booked) = settlement::apply_liquidation_loss(
+            ctx.accounts.user_collateral.deposited,
+            reserved_after,
+            loss,
+            reward,
+        )
+        .ok_or(FructusError::ArithmeticOverflow)?;
+        let victim_after = victim_after_loss
+            .checked_sub(reward)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+        let pool_after = ctx
+            .accounts
+            .market
+            .pnl_pool
+            .checked_add(booked)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+        let liquidator_after = ctx
+            .accounts
+            .liquidator_collateral
+            .deposited
+            .checked_add(reward)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+        let surviving_notional = position
+            .notional
+            .checked_sub(amount)
+            .ok_or(FructusError::ArithmeticOverflow)?;
+
+        // Writes: the targeted position, the victim ledger (the released
+        // backing + the booked loss + the reward), the pool credit, and the
+        // liquidator's reward. The untargeted side's account is never touched.
+        ctx.accounts.position.notional = surviving_notional;
+        ctx.accounts.position.collateral = remaining;
+        ctx.accounts.user_collateral.reserved = reserved_after;
+        ctx.accounts.user_collateral.deposited = victim_after;
+        ctx.accounts.market.pnl_pool = pool_after;
+        ctx.accounts.liquidator_collateral.deposited = liquidator_after;
         Ok(())
     }
 }

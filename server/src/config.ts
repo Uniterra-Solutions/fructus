@@ -24,6 +24,8 @@ export interface Config {
   faucetPerWalletCap: bigint;
   /** Global 24 h cap, raw microunits. */
   faucetGlobalCap: bigint;
+  /** Per-request mint amount (raw microunits); the caps calibrate against it. */
+  faucetDrip: bigint;
 }
 
 export const DEFAULT_RPC_URL = "http://127.0.0.1:8899";
@@ -34,6 +36,8 @@ export const DEFAULT_KEEPER_INTERVAL_MS = 5_000;
 export const DEFAULT_FAUCET_PER_WALLET_CAP = 10_000_000_000n;
 /** 1,000,000 tUSDC (6 dp) — global 24 h cap when the env does not say otherwise. */
 export const DEFAULT_FAUCET_GLOBAL_CAP = 1_000_000_000_000n;
+/** 10 tUSDC (6 dp) — per-request faucet drip when `FAUCET_DRIP` is unset. */
+export const DEFAULT_FAUCET_DRIP = 10_000_000n;
 
 function optional(env: NodeJS.ProcessEnv, key: string): string | null {
   const value = env[key];
@@ -88,5 +92,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     faucetMintAuthorityKeypair: optional(env, "FAUCET_MINT_AUTHORITY_KEYPAIR"),
     faucetPerWalletCap: bigintEnv(env, "FAUCET_PER_WALLET_CAP", DEFAULT_FAUCET_PER_WALLET_CAP),
     faucetGlobalCap: bigintEnv(env, "FAUCET_GLOBAL_CAP", DEFAULT_FAUCET_GLOBAL_CAP),
+    faucetDrip: bigintEnv(env, "FAUCET_DRIP", DEFAULT_FAUCET_DRIP),
   };
 }

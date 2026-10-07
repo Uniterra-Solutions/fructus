@@ -2,12 +2,16 @@
 //! WebSocket (`onProgramAccountChange`, commitment `confirmed`), decode via the
 //! SDK decoders, upsert into SQLite, and derive `fills` / `funding_events` from
 //! the OrderBook event ring and the funding accumulator. Full
-//! `getProgramAccounts` resync at start and every 60 s. STUB: the loop and the
-//! diff fold land in a later wave; the contract below is what the WS layer and
-//! the test shards drive.
+//! `getProgramAccounts` resync at start and every 60 s.
 
-import type { Connection, PublicKey } from "@solana/web3.js";
-import type { OutEventState } from "fructus-sdk/src/account/decode.js";
+import type { Connection, Context, KeyedAccountInfo, PublicKey } from "@solana/web3.js";
+import {
+  ACCOUNT_DISCRIMINATORS,
+  EVENT_QUEUE_LEN,
+  decodeOrderBook,
+  decodePerpMarket,
+  type OutEventState,
+} from "fructus-sdk/src/index.js";
 import type { AccountKind, Db, FillRow, FundingEventRow } from "./db.js";
 
 /** In-process update event emitted after each indexed change (REQ-B-2 → REQ-B-7 pushes). */
@@ -32,32 +36,174 @@ export interface Indexer {
   stop(): Promise<void>;
   /** One full `getProgramAccounts` sweep (start + every RESYNC_INTERVAL_MS). */
   resync(): Promise<void>;
+  /** Highest slot observed by a resync or an account update; `null` before the first. */
+  lastSlot(): number | null;
 }
 
 /** Resync period (D12: devnet data is tiny, so a full sweep is cheap). */
 export const RESYNC_INTERVAL_MS = 60_000;
 
+// ---------------------------------------------------------------------------
+// Account-kind mapping (Anchor discriminator → indexed table)
+// ---------------------------------------------------------------------------
+
+const KIND_BY_TYPE_NAME: Record<string, AccountKind> = {
+  YieldOracle: "oracle",
+  PerpMarket: "market",
+  OrderBook: "order_book",
+  UserCollateral: "user_collateral",
+  Position: "position",
+  Operator: "operator",
+};
+
+const KIND_BY_DISCRIMINATOR = new Map<string, AccountKind>(
+  Object.entries(ACCOUNT_DISCRIMINATORS).map(([name, bytes]) => [
+    bytes.join(","),
+    KIND_BY_TYPE_NAME[name] as AccountKind,
+  ]),
+);
+
+function kindFor(data: Uint8Array): AccountKind | null {
+  if (data.length < 8) return null;
+  return KIND_BY_DISCRIMINATOR.get(Array.from(data.subarray(0, 8)).join(",")) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Indexer
+// ---------------------------------------------------------------------------
+
 export function createIndexer(opts: IndexerOptions): Indexer {
-  // STUB (REQ-B-2). Later wave wires:
-  //  - connection.onProgramAccountChange(opts.programId, handler, "confirmed"),
-  //    decode via the SDK decoders, opts.db.upsertAccount(kind, …) per kind;
-  //  - `fills` from OrderBook event-ring diffs and `funding_events` from
-  //    PerpMarket.funding_accumulator diffs — exactly-once, seq-ordered, safe
-  //    under out-of-order updates, duplicate deliveries, ring wrap and gaps;
-  //  - resync() = getProgramAccounts sweep at start + every RESYNC_INTERVAL_MS;
-  //  - opts.onUpdate(…) after each committed change (WS push fan-out).
-  void opts;
+  let started = false;
+  let subscriptionId: number | null = null;
+  let resyncTimer: NodeJS.Timeout | null = null;
+  let foldState: IndexerFoldState | null = null;
+  let lastIndexedSlot: number | null = null;
+
+  /** Fold one decoded account payload into the derived history and persist it. */
+  function foldDerived(kind: AccountKind, data: Buffer, slot: number, pubkeyB58: string): void {
+    if (kind === "order_book") {
+      const book = decodeOrderBook(data);
+      if (book === null) return;
+      const result = foldIndexerEvents(foldState, {
+        kind: "order_book",
+        market: book.market.toBase58(),
+        slot,
+        eventWriteCursor: book.eventWriteCursor,
+        events: book.events,
+      });
+      foldState = result.state;
+      for (const fill of result.fills) insertIgnoreDuplicate(fill);
+    } else if (kind === "market") {
+      const market = decodePerpMarket(data);
+      if (market === null) return;
+      const result = foldIndexerEvents(foldState, {
+        kind: "market",
+        market: pubkeyB58,
+        slot,
+        fundingEpoch: market.fundingEpoch,
+        fundingAccumulator: market.fundingAccumulator,
+      });
+      foldState = result.state;
+      for (const row of result.fundingEvents) insertIgnoreDuplicateFunding(row);
+    }
+  }
+
+  function insertIgnoreDuplicate(fill: FillRow): void {
+    try {
+      opts.db.insertFill(fill);
+    } catch {
+      // Already folded in an earlier process lifetime (fresh fold state after a
+      // restart re-delivers the ring baseline) — the seq PK makes it a no-op.
+    }
+  }
+
+  function insertIgnoreDuplicateFunding(row: FundingEventRow): void {
+    try {
+      opts.db.insertFundingEvent(row);
+    } catch {
+      // Duplicate funding seq after a restart — see insertIgnoreDuplicate.
+    }
+  }
+
+  /** Upsert one raw account and derive its history. */
+  function ingest(kind: AccountKind, pubkey: PublicKey, data: Buffer, slot: number): void {
+    opts.db.upsertAccount(kind, pubkey.toBase58(), data, slot);
+    if (lastIndexedSlot === null || slot > lastIndexedSlot) lastIndexedSlot = slot;
+    foldDerived(kind, data, slot, pubkey.toBase58());
+    opts.onUpdate?.({ kind, pubkey: pubkey.toBase58(), slot });
+  }
+
+  async function resync(): Promise<void> {
+    const slot = await opts.connection.getSlot("confirmed");
+    const accounts = await opts.connection.getProgramAccounts(opts.programId, {
+      commitment: "confirmed",
+    });
+    for (const { pubkey, account } of accounts) {
+      const kind = kindFor(account.data);
+      if (kind === null) continue;
+      ingest(kind, pubkey, account.data, slot);
+    }
+    if (lastIndexedSlot === null || slot > lastIndexedSlot) lastIndexedSlot = slot;
+  }
+
   return {
     async start(): Promise<void> {
-      // STUB: resync(); subscribe.
+      if (started) return;
+      started = true;
+      await resync();
+      try {
+        subscriptionId = opts.connection.onProgramAccountChange(
+          opts.programId,
+          (keyed: KeyedAccountInfo, context: Context) => {
+            try {
+              const kind = kindFor(keyed.accountInfo.data);
+              if (kind === null) return;
+              ingest(kind, keyed.accountId, keyed.accountInfo.data, context.slot);
+            } catch (err) {
+              console.error(`fructus-server: indexer update failed: ${describe(err)}`);
+            }
+          },
+          "confirmed",
+        );
+      } catch (err) {
+        console.error(`fructus-server: indexer subscription failed: ${describe(err)}`);
+      }
+      resyncTimer = setInterval(() => {
+        void resync().catch((err: unknown) => {
+          console.error(`fructus-server: resync failed: ${describe(err)}`);
+        });
+      }, RESYNC_INTERVAL_MS);
+      resyncTimer.unref();
     },
+
     async stop(): Promise<void> {
-      // STUB: unsubscribe; clear the resync timer.
+      if (subscriptionId !== null) {
+        try {
+          await opts.connection.removeProgramAccountChangeListener(subscriptionId);
+        } catch {
+          /* already gone (e.g. validator stopped) */
+        }
+        subscriptionId = null;
+      }
+      if (resyncTimer !== null) {
+        clearInterval(resyncTimer);
+        resyncTimer = null;
+      }
+      started = false;
     },
+
     async resync(): Promise<void> {
-      // STUB: getProgramAccounts(programId, …) → decode → upsert.
+      await resync();
+    },
+
+    lastSlot(): number | null {
+      return lastIndexedSlot;
     },
   };
+}
+
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +268,16 @@ export interface IndexerFoldResult {
   fundingEvents: FundingEventRow[];
 }
 
+function emptyFoldState(): IndexerFoldState {
+  return {
+    fillSeq: new Map(),
+    pendingFills: new Map(),
+    fundingSlot: new Map(),
+    fundingAccumulator: new Map(),
+    nextFundingSeq: 1,
+  };
+}
+
 /**
  * Fold one decoded account update into the derived history (REQ-B-2): the pure
  * seam behind `fills` / `funding_events` — exactly-once, seq-ordered, safe
@@ -153,19 +309,99 @@ export function foldIndexerEvents(
   state: IndexerFoldState | null,
   snapshot: IndexerSnapshot,
 ): IndexerFoldResult {
-  // STUB (REQ-B-2): conservative pass-through — the real fold (ring dedup,
-  // contiguous drain, funding diffs) lands with the indexer wave. The state
-  // shape is kept so callers can thread it today.
-  void snapshot;
-  return {
-    state: state ?? {
-      fillSeq: new Map(),
-      pendingFills: new Map(),
-      fundingSlot: new Map(),
-      fundingAccumulator: new Map(),
-      nextFundingSeq: 1,
-    },
-    fills: [],
-    fundingEvents: [],
+  const next = state ?? emptyFoldState();
+  return snapshot.kind === "order_book"
+    ? foldOrderBook(next, snapshot)
+    : foldMarketFunding(next, snapshot);
+}
+
+function foldOrderBook(
+  state: IndexerFoldState,
+  snapshot: OrderBookEventSnapshot,
+): IndexerFoldResult {
+  const { market } = snapshot;
+  const queueLen = BigInt(EVENT_QUEUE_LEN);
+  const cursor = snapshot.eventWriteCursor;
+  const windowStart = cursor > queueLen ? cursor - queueLen : 0n;
+
+  let expected = state.fillSeq.get(market);
+  if (expected === undefined) {
+    // First snapshot for this market: it is the baseline. Events older than the
+    // ring window are unrecoverable (already overwritten on-chain), so the
+    // watermark starts at the window start; the rest folds below.
+    expected = windowStart;
+    state.fillSeq.set(market, expected);
+  }
+  if (cursor <= expected) {
+    // Stale or duplicate ring: everything it carries sits below the watermark.
+    return { state, fills: [], fundingEvents: [] };
+  }
+
+  // Buffer every not-yet-folded event in the written window. The FIRST
+  // delivery's slot wins; duplicates and stale re-deliveries never overwrite.
+  const from = expected > windowStart ? expected : windowStart;
+  for (let seq = from; seq < cursor; seq++) {
+    const key = `${market}:${seq}`;
+    if (state.pendingFills.has(key)) continue;
+    const event = snapshot.events[Number(seq % queueLen)];
+    state.pendingFills.set(key, { market, slot: snapshot.slot, event });
+  }
+
+  // Drain the contiguous watermark in seq order; only Fill (kind 0) events
+  // become rows, but every drained seq advances the watermark (so a later fill
+  // never stalls behind a cancel/residual) and no seq is ever emitted twice.
+  const fills: FillRow[] = [];
+  for (;;) {
+    const key = `${market}:${expected}`;
+    const buffered = state.pendingFills.get(key);
+    if (buffered === undefined) break;
+    state.pendingFills.delete(key);
+    if (buffered.event.kind === 0) {
+      fills.push({
+        seq: Number(expected),
+        slot: buffered.slot,
+        market: buffered.market,
+        owner: buffered.event.owner.toBase58(),
+        side: buffered.event.side,
+        price: buffered.event.price.toString(),
+        size: buffered.event.size.toString(),
+      });
+    }
+    expected += 1n;
+  }
+  state.fillSeq.set(market, expected);
+  return { state, fills, fundingEvents: [] };
+}
+
+function foldMarketFunding(
+  state: IndexerFoldState,
+  snapshot: MarketFundingSnapshot,
+): IndexerFoldResult {
+  const { market } = snapshot;
+  const lastSlot = state.fundingSlot.get(market);
+  const lastAcc = state.fundingAccumulator.get(market);
+  if (lastSlot === undefined || lastAcc === undefined) {
+    // First snapshot for this market: the funding baseline (no row).
+    state.fundingSlot.set(market, snapshot.slot);
+    state.fundingAccumulator.set(market, snapshot.fundingAccumulator);
+    return { state, fills: [], fundingEvents: [] };
+  }
+  if (snapshot.slot <= lastSlot) {
+    // Duplicate or stale delivery: an equal-or-older slot is a no-op.
+    return { state, fills: [], fundingEvents: [] };
+  }
+  state.fundingSlot.set(market, snapshot.slot);
+  if (snapshot.fundingAccumulator === lastAcc) {
+    // Newer slot, unchanged accumulator: nothing to fold.
+    return { state, fills: [], fundingEvents: [] };
+  }
+  const row: FundingEventRow = {
+    seq: state.nextFundingSeq,
+    slot: snapshot.slot,
+    market,
+    amount: (snapshot.fundingAccumulator - lastAcc).toString(),
   };
+  state.nextFundingSeq += 1;
+  state.fundingAccumulator.set(market, snapshot.fundingAccumulator);
+  return { state, fills: [], fundingEvents: [row] };
 }

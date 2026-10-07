@@ -1,0 +1,107 @@
+# API (HTTP + WebSocket surface)
+
+**Purpose:** the off-chain `server/` surface (product-v2, REQ-B-7): SIWS wallet
+login, the operator **bind** relay, portfolio and market reads, the
+`/actions/*` write routes, the devnet faucet, health, and the WebSocket push
+channel. The route table below is the contract — it mirrors
+[`api/openapi.json`](api/openapi.json) and the server's exported `ROUTES`.
+
+All REST responses use one JSON envelope:
+
+```
+{ "ok": true,  "data": <T> }                          // success
+{ "ok": false, "error": { "code": "...", "message": "..." } }   // failure
+```
+
+`code` is a stable machine string (a `FructusError` name such as
+`OperatorUnauthorized`, or a transport error such as `not_found` /
+`unauthorized` / `not_implemented`). Amounts, rates, accumulators and seqs in
+payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
+— JSON numbers cannot carry them exactly.
+
+## REST routes
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/auth/challenge` | public | Issue the SIWS challenge: `{wallet}` → `{signInInput, nonce, expiresAt}` (expiry ≤ 5 min) |
+| `POST` | `/auth/verify` | public | Verify the ed25519 signature over `signInInput`; issue the 24 h session `{token, wallet}` |
+| `POST` | `/bind/prepare` | public | Build the wallet-signable operator bind transaction (base64): `[spl approve, set_operator]` + `{operator, operatorRecord}` |
+| `POST` | `/bind/confirm` | public | Submit the signed bind transaction; reports `status: "bound"` or `status: "revoked"` with the operator |
+| `GET` | `/me` | JWT | Full portfolio: `deposited`, `reserved`, `claimable`, `free`, `equity`, `requirementInitial`, `requirementMaint`, `health`, `operator`, `positions` |
+| `GET` | `/me/positions` | JWT | The wallet's position views (one per side) |
+| `GET` | `/me/history` | JWT | Indexed fills + funding rows in seq order |
+| `GET` | `/market` | public | Market snapshot: `mark`, `index`, `fundingAccumulator`, `bestBid`, `bestAsk` |
+| `GET` | `/market/book` | public | L2 book levels `[price, size]`, best first |
+| `POST` | `/actions/deposit` | JWT | Build/submit a deposit action (`{amount}`) |
+| `POST` | `/actions/withdraw` | JWT | Build/submit a withdrawal action (`{amount}`) |
+| `POST` | `/actions/orders` | JWT | Place a limit or market order (`{kind, side, size, price?}`) |
+| `POST` | `/actions/orders/cancel` | JWT | Cancel a resting order (`{side, seq}`) |
+| `POST` | `/actions/positions/close` | JWT | Close position size (`{side, size}`) |
+| `POST` | `/faucet` | public | Mint test USDC to the wallet's ATA (`{wallet}`); `404` when the faucet is disabled |
+| `GET` | `/healthz` | public | `{status: "ok", slot}` — last indexed slot (`null` before the first resync) |
+
+Everything under `/me` and `/actions` is JWT-gated (`Authorization: Bearer
+<token>`); `/auth/*`, `/bind/*`, `/market*`, `/faucet` and `/healthz` are public.
+Every `/actions/*` response is the `tx_log` row for the attempt:
+`{actionId, signature?, status: "queued" | "sent" | "confirmed" | "failed", error?}`.
+
+## SIWS login flow
+
+```mermaid
+sequenceDiagram
+    participant W as Wallet (client)
+    participant S as server
+    W->>S: POST /auth/challenge {wallet}
+    S-->>W: {signInInput, nonce, expiresAt}
+    W->>W: sign signInInput (ed25519)
+    W->>S: POST /auth/verify {wallet, signature, signInInput}
+    S->>S: verify ed25519 + single-use, unexpired nonce
+    S-->>W: {token (JWT, 24 h), wallet}
+    W->>S: GET /me (Authorization: Bearer <token>)
+    S-->>W: portfolio envelope
+```
+
+The challenge is single-use and expires ≤ 5 minutes after issuance; replaying an
+`signInInput` (or signing a mismatched one) fails verification.
+
+## Operator bind / revoke flow
+
+```mermaid
+sequenceDiagram
+    participant W as Subject wallet
+    participant S as server
+    participant P as Fructus program
+    W->>S: POST /bind/prepare {wallet}
+    S-->>W: {transaction: [spl approve(Operator PDA, u64::MAX), set_operator(operator)], operator, operatorRecord}
+    W->>W: sign transaction
+    W->>S: POST /bind/confirm {transaction, signature}
+    S->>P: submit bind transaction
+    P-->>S: confirmed
+    S-->>W: {status: "bound", operator}
+    Note over W,P: revoke = [spl approve(0), set_operator(default)]
+```
+
+After a bind, the operator key can act for the wallet through the program's
+`operator_*` instructions without further wallet signatures — see
+[modules/operator.md](modules/operator.md) for the delegation model and trust
+story.
+
+## Faucet
+
+`POST /faucet {wallet}` mints test USDC to the wallet's ATA (devnet only).
+Caps: per-wallet **10,000 tUSDC / 24 h** plus a global `FAUCET_GLOBAL_CAP` /
+24 h. When the faucet is not configured the route answers `404`
+(`FaucetDisabledError`); a cap breach answers the `FaucetCapError` code.
+
+## WebSocket
+
+`GET /ws?token=<session JWT>` upgrades to the push channel; a missing, invalid
+or expired token closes the socket with code **4401**. The four push message
+types (`book`, `mark`, `user`, `tx`) are documented in
+[api/ws.md](api/ws.md).
+
+## Health
+
+`GET /healthz` → `{ok: true, data: {status: "ok", slot: <number|null>}}`,
+where `slot` is the last slot the indexer has consumed (`null` before the first
+resync). Use it for readiness probes and lag detection.

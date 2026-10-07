@@ -100,6 +100,11 @@ export interface Db {
   consumeNonce(nonce: string, now?: number): NonceRow | null;
   deleteExpiredNonces(now?: number): number;
 
+  /** Record one accepted faucet drip (REQ-B-8 exactly-once crediting). */
+  insertFaucetCredit(wallet: string, amount: bigint, createdAt: number): void;
+  /** Sum of faucet drips in scope (`since` = ms epoch lower bound, inclusive). */
+  sumFaucetCredits(filter?: { wallet?: string; since?: number }): bigint;
+
   close(): void;
 }
 
@@ -161,6 +166,14 @@ function toNonceRow(row: Record<string, unknown>): NonceRow {
 export function openDb(path: string): Db {
   const db = new DatabaseSync(path);
 
+  // The store is shared across processes in the e2e fixtures (the test process
+  // opens the server's SQLite file to read `tx_log` rows while the server is
+  // writing them), so connections must wait for locks instead of failing with
+  // SQLITE_BUSY, and WAL keeps readers from blocking on writers. Both pragmas
+  // are no-ops for `:memory:` stores.
+  db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA journal_mode = WAL;");
+
   const accountTables = ACCOUNT_KINDS.map(
     (kind) =>
       `CREATE TABLE IF NOT EXISTS ${accountTable(kind)} (
@@ -206,6 +219,13 @@ export function openDb(path: string): Db {
       sign_in_input TEXT NOT NULL,
       expires_at    INTEGER NOT NULL,
       consumed      INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS faucet_credits (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet     TEXT NOT NULL,
+      amount     TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     );
   `);
 
@@ -343,6 +363,33 @@ export function openDb(path: string): Db {
 
     deleteExpiredNonces(now = Date.now()) {
       return Number(db.prepare("DELETE FROM auth_nonces WHERE expires_at < ?").run(now).changes);
+    },
+
+    insertFaucetCredit(wallet, amount, createdAt) {
+      db.prepare("INSERT INTO faucet_credits (wallet, amount, created_at) VALUES (?, ?, ?)").run(
+        wallet,
+        amount.toString(),
+        createdAt,
+      );
+    },
+
+    sumFaucetCredits(filter = {}) {
+      const where: string[] = [];
+      const params: Param[] = [];
+      if (filter.wallet !== undefined) {
+        where.push("wallet = ?");
+        params.push(filter.wallet);
+      }
+      if (filter.since !== undefined) {
+        where.push("created_at >= ?");
+        params.push(filter.since);
+      }
+      const rows = db
+        .prepare(
+          `SELECT amount FROM faucet_credits ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}`,
+        )
+        .all(...params);
+      return rows.reduce((total, row) => total + BigInt(row.amount as string), 0n);
     },
 
     close() {

@@ -28,18 +28,10 @@ pub fn authorized(
     market: &Pubkey,
     user: &Pubkey,
 ) -> bool {
-    // STUB: always-un-authorized placeholder. The conjunction over the record
-    // fields lands with the operator implementation task; the red
-    // `operator_auth_matrix` property test below pins the full contract.
-    let _ = (
-        signer,
-        record_operator,
-        record_market,
-        record_user,
-        market,
-        user,
-    );
-    false
+    record_operator == signer
+        && record_operator != &Pubkey::default()
+        && record_market == market
+        && record_user == user
 }
 
 #[cfg(test)]

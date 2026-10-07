@@ -14,7 +14,9 @@ import {
   ORDER_LEN,
   OrderBookLayout,
   OrderLayout,
+  OPERATOR_LEN,
   OUT_EVENT_LEN,
+  OperatorLayout,
   OutEventLayout,
   PERP_MARKET_LEN,
   PerpMarket,
@@ -26,11 +28,11 @@ import {
   YieldOracleLayout,
 } from "./layout.js";
 
-function need(data: Buffer, payloadLen: number): boolean {
+function need(data: Uint8Array, payloadLen: number): boolean {
   return data.length >= DISCRIMINATOR + payloadLen;
 }
 
-function readPubkey(data: Buffer, off: number): PublicKey {
+function readPubkey(data: Uint8Array, off: number): PublicKey {
   return new PublicKey(data.subarray(off, off + 32));
 }
 
@@ -195,14 +197,22 @@ export interface OperatorState {
 }
 
 /**
- * STUB: decode the 97-byte `Operator` payload. Returns `null` until the real
- * field reads (`DISCRIMINATOR + OperatorLayout.*`) land with
- * SDK-OPERATOR-DECODER-ROUNDTRIPS.
+ * Decode the 97-byte `Operator` payload (`market@0, user@32, operator@64,
+ * bump@96`, after the 8-byte Anchor discriminator). A buffer shorter than
+ * `DISCRIMINATOR + OPERATOR_LEN` yields `null`; trailing padding is ignored
+ * (the `need()` >= convention).
  */
 export function decodeOperator(data: Buffer | Uint8Array | null): OperatorState | null {
-  // STUB: layout offsets live in `layout.ts` (OPERATOR_LEN = 97, market@0,
-  // user@32, operator@64, bump@96); short buffers will yield `null`.
-  return null;
+  if (!data || !need(data, OPERATOR_LEN)) {
+    return null;
+  }
+  const d = DISCRIMINATOR;
+  return {
+    market: readPubkey(data, d + OperatorLayout.market),
+    user: readPubkey(data, d + OperatorLayout.user),
+    operator: readPubkey(data, d + OperatorLayout.operator),
+    bump: data[d + OperatorLayout.bump],
+  };
 }
 
 // ---------------------------------------------------------------------------

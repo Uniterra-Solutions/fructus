@@ -45,20 +45,25 @@ pub fn deposit(deposited: u64, amount: u64) -> Option<u64> {
 /// `None` and the caller leaves the ledger untouched. `amount == free` is
 /// allowed when the equity gate permits it; on success it returns
 /// `Some(deposited - amount)`.
-///
-/// STUB: the `pnl_sum` equity gate is not applied yet — the body keeps the
-/// old ledger-only seam semantics until the cross-margin task lands; the red
-/// `withdraw_blocked_below_initial_margin` property test below pins the full
-/// contract.
 pub fn withdraw(deposited: u64, reserved: u64, pnl_sum: i128, amount: u64) -> Option<u64> {
-    // STUB: `pnl_sum` (the signed Σ unrealized-PnL over both sides) is
-    // deliberately ignored — the equity gate `equity - amount >= reserved`
-    // arrives with the cross-margin margin model (REQ-A2-3).
-    let _ = pnl_sum;
+    // The ledger-only free seam first: `amount <= deposited - reserved` (None
+    // when `reserved > deposited` — a ledger invariant violation).
     let free = free_collateral(deposited, reserved)?;
     if amount > free {
         return None;
     }
+    // Then the equity gate (REQ-A2-3): the post-withdraw equity
+    // (`deposited + pnl_sum - amount`, saturating at the i128 extremes so
+    // hostile inputs can never panic) must stay at or above the reserved
+    // (initial-margin) requirement.
+    let post_equity = (deposited as i128)
+        .saturating_add(pnl_sum)
+        .saturating_sub(amount as i128);
+    if post_equity < reserved as i128 {
+        return None;
+    }
+    // `amount <= free <= deposited` (checked above), so the subtraction is
+    // exact; `checked_sub` keeps the no-panicking-math discipline.
     deposited.checked_sub(amount)
 }
 

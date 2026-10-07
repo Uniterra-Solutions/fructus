@@ -1712,6 +1712,26 @@ async fn operator_orders_attribute_to_the_user() {
     let book = book_view(&env).await;
     assert_eq!(book.resting_bids(), 0, "the subject's order was removed");
     assert_eq!(book.best_bid, 0);
+    // AMEND-PV-1: the operator cancel appends the subject-attributed Cancel
+    // event (parity with the direct `cancel_order`); the crossing fill below
+    // therefore lands at slot 1.
+    assert_eq!(book.write_cursor, 1, "the cancel is recorded as an event");
+    let ev = book.event(0);
+    assert_eq!(ev.kind, 1, "the cancel event kind");
+    assert_eq!(ev.side, LONG, "the cancelled order rested on the bid side");
+    assert_eq!(
+        ev.owner,
+        a.pubkey(),
+        "the cancel event belongs to the SUBJECT"
+    );
+    assert_ne!(ev.owner, op_pub, "never the operator key");
+    assert_eq!(
+        ev.counterparty,
+        Pubkey::default(),
+        "a cancel has no counterparty"
+    );
+    assert_eq!(ev.price, pa);
+    assert_eq!(ev.size, SIZE);
 
     // 3. Maker B rests an ask; the operator opens a long for the subject.
     let pb = 200_000u64;
@@ -1764,7 +1784,7 @@ async fn operator_orders_attribute_to_the_user() {
     let book = book_view(&env).await;
     assert_eq!(book.resting_asks(), 0, "maker B's ask was consumed");
     assert_eq!(book.best_ask, 0, "the ask side is empty after the fill");
-    let ev = book.event(0);
+    let ev = book.event(1);
     assert_eq!(ev.kind, 0, "the crossing fill is recorded");
     assert_eq!(ev.side, SHORT, "the maker rested on the ask side");
     assert_eq!(ev.owner, b.pubkey(), "the maker event belongs to B");

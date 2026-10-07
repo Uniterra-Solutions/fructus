@@ -107,8 +107,10 @@ stateDiagram-v2
    [settlement.md](settlement.md) for the flow; `closed_notional == 0` is an
    idempotent no-op.
 6. **Funding & liquidation** — `settle_funding` accrues signed funding over the
-   full elapsed epochs (see [funding.md](funding.md)); `liquidate` enforces the
-   maintenance-margin floor on an under-margin position (see
+   full elapsed epochs (see [funding.md](funding.md)); `liquidate(side, amount)`
+   enforces the **account-level** maintenance-margin floor — the account's
+   `equity = deposited + Σ upnl` (both sides) against the summed maintenance
+   requirement — and transitions only the targeted side (see
    [liquidation.md](liquidation.md)).
 
 ### Open-intent maker settlement (D5)
@@ -150,6 +152,22 @@ fails the whole transaction atomically — including a missing `UserCollateral`
 ledger, which reports `InsufficientFreeCollateral` (the ledger is
 deposit-created, so a missing ledger is a free-collateral error, not an
 account-format error).
+
+**Requirement vs equity (product-v2 A2).** `reserved = Σ_side m(n_side,
+initial_margin_bps)` is the *requirement* half; the *equity* half is
+`equity = deposited + Σ_side upnl` (signed, index-based). Two account-level
+gates compare them:
+
+- the **withdraw equity gate** — a withdrawal must leave `equity − amount ≥
+  reserved` (else `InsufficientFreeCollateral`; see
+  [collateral.md](collateral.md)); and
+- the **liquidation trigger** — the account is liquidatable iff it has exposure
+  and `equity < Σ_side m(n_side, maintenance_bps)`, strict (see
+  [liquidation.md](liquidation.md)).
+
+Margin *reservation itself* stays per-position: both sides' ceilings sum into
+`reserved`, and a liquidation transitions only the targeted side while
+preserving that sum.
 
 ## Entry index & PnL (D6/D12)
 

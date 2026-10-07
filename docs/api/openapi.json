@@ -1,6 +1,629 @@
 {
   "openapi": "3.1.0",
-  "info": { "title": "Fructus API", "version": "0.1.0" },
-  "x-status": "skeleton — paths populated by the product-v2 implementation wave",
-  "paths": {}
+  "info": {
+    "title": "Fructus API",
+    "version": "0.2.0",
+    "description": "Product-v2 REST surface (PRD REQ-B-7, D14). Mirrors the server's exported ROUTES table (server/src/api.ts) and docs/api.md. Every response is the unified JSON envelope: {ok: true, data} | {ok: false, error: {code, message}}. Amounts, rates, accumulators and seqs are decimal strings of raw base units."
+  },
+  "servers": [{ "url": "http://127.0.0.1:8787", "description": "local / devnet prototype" }],
+  "paths": {
+    "/auth/challenge": {
+      "post": {
+        "summary": "Issue the SIWS challenge",
+        "operationId": "authChallenge",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["wallet"],
+                "properties": { "wallet": { "type": "string", "description": "Base58 wallet address" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The SIWS message for the wallet to sign (expiry <= 5 min).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChallengeEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/auth/verify": {
+      "post": {
+        "summary": "Verify the ed25519 signature and issue a session JWT",
+        "operationId": "authVerify",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["wallet", "signature", "signInInput"],
+                "properties": {
+                  "wallet": { "type": "string" },
+                  "signature": { "type": "string", "description": "Base58 ed25519 signature over signInInput" },
+                  "signInInput": { "type": "string", "description": "Echo of the challenge's signInInput" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The issued 24 h session.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/bind/prepare": {
+      "post": {
+        "summary": "Prepare the wallet-signable operator bind transaction",
+        "description": "Returns the base64 legacy transaction [spl approve(Operator PDA, u64::MAX), set_operator] for the wallet to sign and submit locally (D4).",
+        "operationId": "bindPrepare",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["wallet"],
+                "properties": { "wallet": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The unsigned bind payload + the operator it binds.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BindPrepareEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/bind/confirm": {
+      "post": {
+        "summary": "Confirm a submitted bind transaction",
+        "description": "Verifies the transaction landed on chain and reports the resulting Operator record (status bound | revoked).",
+        "operationId": "bindConfirm",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["transaction", "signature"],
+                "properties": {
+                  "transaction": { "type": "string", "description": "The signed transaction, base64 serialized" },
+                  "signature": { "type": "string", "description": "Base58 signature after submission" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The confirmed binding state.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BindConfirmEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "The session wallet's full portfolio",
+        "operationId": "getMe",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Portfolio: deposited/reserved/claimable/free, equity, requirements, health, operator, positions.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserPortfolioEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/me/positions": {
+      "get": {
+        "summary": "The session wallet's position views (one per side)",
+        "operationId": "getMePositions",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Position views.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PositionsEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/me/history": {
+      "get": {
+        "summary": "Indexed fills + funding rows for the session wallet",
+        "operationId": "getMeHistory",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "History entries in seq order.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HistoryEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/market": {
+      "get": {
+        "summary": "Market snapshot",
+        "operationId": "getMarket",
+        "responses": {
+          "200": {
+            "description": "mark/index/fundingAccumulator/bestBid/bestAsk.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MarketEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/market/book": {
+      "get": {
+        "summary": "L2 order-book levels",
+        "operationId": "getMarketBook",
+        "responses": {
+          "200": {
+            "description": "Bid/ask levels as [price, size] pairs, best first.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BookEnvelope" } } }
+          }
+        }
+      }
+    },
+    "/actions/deposit": {
+      "post": {
+        "summary": "Operator deposit for the session wallet",
+        "operationId": "actionDeposit",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": { "amount": { "type": "string", "description": "Raw microunits (decimal string)" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tx_log row for the attempt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/actions/withdraw": {
+      "post": {
+        "summary": "Operator withdrawal for the session wallet",
+        "operationId": "actionWithdraw",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": { "amount": { "type": "string", "description": "Raw microunits (decimal string)" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tx_log row for the attempt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/actions/orders": {
+      "post": {
+        "summary": "Place a limit or market order for the session wallet",
+        "operationId": "actionOrders",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["kind", "side", "size"],
+                "properties": {
+                  "kind": { "type": "string", "enum": ["limit", "market"] },
+                  "side": { "type": "integer", "enum": [0, 1], "description": "0 = Long/Bid, 1 = Short/Ask" },
+                  "size": { "type": "string", "description": "Raw base units (decimal string)" },
+                  "price": { "type": "string", "description": "Required iff kind = limit" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tx_log row for the attempt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/actions/orders/cancel": {
+      "post": {
+        "summary": "Cancel a resting order for the session wallet",
+        "operationId": "actionOrdersCancel",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["side", "seq"],
+                "properties": {
+                  "side": { "type": "integer", "enum": [0, 1] },
+                  "seq": { "type": "string", "description": "Book order seq (decimal string)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tx_log row for the attempt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/actions/positions/close": {
+      "post": {
+        "summary": "Close position size for the session wallet",
+        "operationId": "actionPositionsClose",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["side", "size"],
+                "properties": {
+                  "side": { "type": "integer", "enum": [0, 1] },
+                  "size": { "type": "string", "description": "Raw base units (decimal string)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The tx_log row for the attempt.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "501": { "$ref": "#/components/responses/OperatorUnconfigured" }
+        }
+      }
+    },
+    "/faucet": {
+      "post": {
+        "summary": "Mint test USDC to the wallet's ATA",
+        "operationId": "faucet",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["wallet"],
+                "properties": { "wallet": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The minted amount + the ATA it landed in.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FaucetEnvelope" } } }
+          },
+          "404": { "$ref": "#/components/responses/FaucetDisabled" },
+          "429": { "$ref": "#/components/responses/FaucetCapExceeded" }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness/readiness",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "status ok + last indexed slot (null before the first resync).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthzEnvelope" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "HS256 session JWT from POST /auth/verify (24 h expiry): `Authorization: Bearer ***"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed request payload.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Unauthorized": {
+        "description": "Missing / invalid / expired session token (code `unauthorized`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "OperatorUnconfigured": {
+        "description": "The operator hot key is not configured (code `operator_unconfigured`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "FaucetDisabled": {
+        "description": "The faucet is disabled/unconfigured (code `faucet_disabled`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "FaucetCapExceeded": {
+        "description": "The 24 h faucet budget is exhausted (code `faucet_cap_exceeded`).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      }
+    },
+    "schemas": {
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": ["ok", "error"],
+        "properties": {
+          "ok": { "const": false },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": { "code": { "type": "string" }, "message": { "type": "string" } }
+          }
+        }
+      },
+      "ChallengeResponse": {
+        "type": "object",
+        "required": ["signInInput", "nonce", "expiresAt"],
+        "properties": {
+          "signInInput": { "type": "string" },
+          "nonce": { "type": "string" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "required": ["token", "wallet"],
+        "properties": { "token": { "type": "string" }, "wallet": { "type": "string" } }
+      },
+      "BindPrepareResponse": {
+        "type": "object",
+        "required": ["transaction", "operator", "operatorRecord"],
+        "properties": {
+          "transaction": { "type": "string", "description": "Base64 serialized (unsigned) transaction" },
+          "operator": { "type": "string", "description": "The operator key being bound" },
+          "operatorRecord": { "type": "string", "description": "The (market, wallet) Operator PDA" }
+        }
+      },
+      "BindConfirmResponse": {
+        "type": "object",
+        "required": ["status", "operator"],
+        "properties": {
+          "status": { "type": "string", "enum": ["bound", "revoked"] },
+          "operator": { "type": ["string", "null"] }
+        }
+      },
+      "PositionView": {
+        "type": "object",
+        "required": ["side", "notional", "upnl", "reqInitial", "reqMaint"],
+        "properties": {
+          "side": { "type": "integer", "enum": [0, 1] },
+          "notional": { "type": "string" },
+          "entryRate": { "type": "string" },
+          "upnl": { "type": "string" },
+          "reqInitial": { "type": "string" },
+          "reqMaint": { "type": "string" }
+        }
+      },
+      "OperatorView": {
+        "type": "object",
+        "properties": { "address": { "type": ["string", "null"] } }
+      },
+      "UserPortfolio": {
+        "type": "object",
+        "required": [
+          "wallet",
+          "deposited",
+          "reserved",
+          "claimable",
+          "free",
+          "equity",
+          "requirementInitial",
+          "requirementMaint",
+          "health",
+          "operator",
+          "positions"
+        ],
+        "properties": {
+          "wallet": { "type": "string" },
+          "deposited": { "type": "string" },
+          "reserved": { "type": "string" },
+          "claimable": { "type": "string" },
+          "free": { "type": "string" },
+          "equity": { "type": "string" },
+          "requirementInitial": { "type": "string" },
+          "requirementMaint": { "type": "string" },
+          "health": { "type": "string", "enum": ["healthy", "liquidatable"] },
+          "operator": { "oneOf": [{ "$ref": "#/components/schemas/OperatorView" }, { "type": "null" }] },
+          "positions": { "type": "array", "items": { "$ref": "#/components/schemas/PositionView" } }
+        }
+      },
+      "PositionsResponse": {
+        "type": "object",
+        "required": ["positions"],
+        "properties": { "positions": { "type": "array", "items": { "$ref": "#/components/schemas/PositionView" } } }
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "required": ["kind", "seq", "slot"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["fill", "funding"] },
+          "seq": { "type": "string" },
+          "slot": { "type": "string" },
+          "side": { "type": "integer", "enum": [0, 1] },
+          "price": { "type": "string" },
+          "size": { "type": "string" },
+          "amount": { "type": "string" }
+        }
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "required": ["entries"],
+        "properties": { "entries": { "type": "array", "items": { "$ref": "#/components/schemas/HistoryEntry" } } }
+      },
+      "MarketView": {
+        "type": "object",
+        "required": ["mark", "index", "fundingAccumulator", "bestBid", "bestAsk"],
+        "properties": {
+          "mark": { "type": ["string", "null"] },
+          "index": { "type": "string" },
+          "fundingAccumulator": { "type": "string" },
+          "bestBid": { "type": ["string", "null"] },
+          "bestAsk": { "type": ["string", "null"] }
+        }
+      },
+      "BookView": {
+        "type": "object",
+        "required": ["bids", "asks"],
+        "properties": {
+          "bids": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 } },
+          "asks": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 } }
+        }
+      },
+      "ActionResponse": {
+        "type": "object",
+        "required": ["actionId", "status"],
+        "properties": {
+          "actionId": { "type": "string" },
+          "signature": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "sent", "confirmed", "failed"] },
+          "error": { "type": "string" }
+        }
+      },
+      "FaucetResponse": {
+        "type": "object",
+        "required": ["amount", "ata"],
+        "properties": { "amount": { "type": "string" }, "ata": { "type": "string" } }
+      },
+      "HealthzResponse": {
+        "type": "object",
+        "required": ["status", "slot"],
+        "properties": {
+          "status": { "const": "ok" },
+          "slot": { "type": ["integer", "null"] }
+        }
+      },
+      "ChallengeEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/ChallengeResponse" } }
+      },
+      "SessionEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/SessionResponse" } }
+      },
+      "BindPrepareEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/BindPrepareResponse" } }
+      },
+      "BindConfirmEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/BindConfirmResponse" } }
+      },
+      "UserPortfolioEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/UserPortfolio" } }
+      },
+      "PositionsEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/PositionsResponse" } }
+      },
+      "HistoryEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/HistoryResponse" } }
+      },
+      "MarketEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/MarketView" } }
+      },
+      "BookEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/BookView" } }
+      },
+      "ActionEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/ActionResponse" } }
+      },
+      "FaucetEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/FaucetResponse" } }
+      },
+      "HealthzEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/HealthzResponse" } }
+      }
+    }
+  },
+  "x-ws": {
+    "endpoint": "/ws?token=<session JWT>",
+    "unauthorizedCloseCode": 4401,
+    "messageTypes": ["book", "mark", "user", "tx"],
+    "spec": "docs/api/ws.md"
+  }
 }

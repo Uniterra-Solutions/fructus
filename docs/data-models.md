@@ -2,8 +2,8 @@
 
 On-chain data shapes: the oracle account, the perpetual-market account, the
 order book (with its inline `Order`/`OutEvent`/`Observation` sub-structs), the
-collateral ledger, the per-`(market, user, side)` position ledger, and the
-derived exchange rate.
+collateral ledger, the per-`(market, user, side)` position ledger, the operator
+delegation record, and the derived exchange rate.
 
 ## `YieldOracle` (anchor account)
 
@@ -195,6 +195,29 @@ One PDA per `(market, user, side)`, seed
   (clamped so the vault is never insolvent) before resetting all three to `0`.
   See [modules/settlement.md](modules/settlement.md).
 
+## `Operator` (anchor account)
+
+One PDA per `(market, user)`, seed
+`[OPERATOR_SEED, market.key(), user.key()]` with `OPERATOR_SEED = b"operator"`.
+The `Operator` delegation record is a packed borsh account whose payload is
+exactly **97 bytes** (after the 8-byte discriminator):
+
+| Field | Type | Offset (payload) | Notes |
+| --- | --- | --- | --- |
+| `market` | Pubkey | 0 | bound market (also in the PDA seed) |
+| `user` | Pubkey | 32 | the subject user (also in the PDA seed) |
+| `operator` | Pubkey | 64 | delegated signer; `Pubkey::default()` = revoked |
+| `bump` | u8 | 96 | PDA bump |
+
+- `Operator::LEN = 97` (`32 + 32 + 32 + 1`, packed borsh payload, excluding the
+  8-byte discriminator).
+- Lazily created by `set_operator` on first bind (payer = user, rent-exempt
+  `8 + 97` bytes); create / rotate / revoke all rewrite the same in-place
+  record — the account is **never closed** (`Pubkey::default()` is the revoke
+  state).
+- See [modules/operator.md](modules/operator.md) for the delegation model and
+  [api-reference.md](api-reference.md) for the instruction rows.
+
 ## `ExchangeRate` (derived, not stored)
 
 | Field | Type | Source |
@@ -216,6 +239,7 @@ erDiagram
     PerpMarket ||--|| OrderBook : "book bound by market key"
     PerpMarket ||--o{ UserCollateral : "ledger per (market, user)"
     PerpMarket ||--o{ Position : "position per (market, user, side)"
+    PerpMarket ||--o{ Operator : "delegation per (market, user)"
     PerpMarket ||--|| VaultTokenAccount : "collateral custody (seed vault)"
     ExchangeRate ||--|| StakePoolAccount : "reads"
     YieldOracle {
@@ -269,6 +293,12 @@ erDiagram
         u128 closed_entry_n_sum
         u128 closed_entry_d_sum
         u64 open_slot
+    }
+    Operator {
+        Pubkey market
+        Pubkey user
+        Pubkey operator
+        u8 bump
     }
     ExchangeRate {
         u64 total_lamports

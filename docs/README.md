@@ -8,7 +8,7 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 
 ## Quick Links
 
-- [Setup](setup.md) · [Architecture](architecture.md) · [API Reference](api-reference.md)
+- [Setup](setup.md) · [Architecture](architecture.md) · [API Reference](api-reference.md) · [HTTP + WS API](api.md)
 - Back to project [README](../README.md)
 
 ## I want to…
@@ -18,6 +18,8 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 | Build / run / install | [setup.md](setup.md) |
 | Understand the system design | [architecture.md](architecture.md) |
 | See the on-chain instruction surface | [api-reference.md](api-reference.md) |
+| Call the HTTP + WebSocket API (server) | [api.md](api.md) |
+| Understand operator delegation | [modules/operator.md](modules/operator.md) |
 | See account/field layouts | [data-models.md](data-models.md) |
 | Understand the mark-price oracle | [modules/oracle.md](modules/oracle.md) |
 | Understand trustless settlement | [modules/settlement.md](modules/settlement.md) |
@@ -27,6 +29,8 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 | Understand the funding engine | [modules/funding.md](modules/funding.md) |
 | Understand liquidation | [modules/liquidation.md](modules/liquidation.md) |
 | Understand the collateral vault | [modules/collateral.md](modules/collateral.md) |
+| Understand operator delegation | [modules/operator.md](modules/operator.md) |
+| Call the HTTP/WS API | [api.md](api.md) |
 | Understand the off-chain keeper | [modules/publisher.md](modules/publisher.md) |
 | Use the SDK / CLI / deploy to devnet | [SDK, CLI & deployment](#sdk-cli--deployment) |
 | Run tests / fuzz | [testing.md](testing.md) |
@@ -45,10 +49,13 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 - [modules/order-book.md](modules/order-book.md) — order book + matching engine + mark/twap
 - [modules/positions.md](modules/positions.md) — position lifecycle (open/close long & short)
 - [modules/funding.md](modules/funding.md) — funding engine (premium, funding rate, `settle_funding`)
-- [modules/liquidation.md](modules/liquidation.md) — liquidation (health, TWAP reference, `liquidate`)
-- [modules/collateral.md](modules/collateral.md) — collateral vault + deposit/withdraw
+- [modules/liquidation.md](modules/liquidation.md) — account-level liquidation (health, TWAP reference, `liquidate`)
+- [modules/collateral.md](modules/collateral.md) — collateral vault + deposit/withdraw (equity gate)
 - [modules/publisher.md](modules/publisher.md) — off-chain keeper
+- [modules/operator.md](modules/operator.md) — operator delegation (`set_operator` + `operator_*`)
 - [api-reference.md](api-reference.md) — instruction reference + signature scheme
+- [api.md](api.md) — HTTP + WebSocket API surface (server)
+- [api/ws.md](api/ws.md) — WebSocket push message types
 - [data-models.md](data-models.md) — account + derived-rate layouts
 - [setup.md](setup.md) — getting started
 - [testing.md](testing.md) — test strategy + commands

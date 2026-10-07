@@ -141,14 +141,9 @@ export function applyPnl(deposited: bigint, pnlValue: bigint): bigint {
  * `bigint` makes the mirror total and exact — unlike the Rust `i128` (which
  * saturates at its extremes for hostile inputs), the exact sum is always
  * representable here.
- *
- * STUB: returns `0n` — the exact signed sum lands with the cross-margin
- * implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST sweep pins the
- * contract.
  */
 export function accountEquity(deposited: bigint, pnlSum: bigint): bigint {
-  // STUB: `deposited + pnlSum` arrives with the cross-margin implementation.
-  return 0n;
+  return deposited + pnlSum;
 }
 
 /**
@@ -160,15 +155,9 @@ export function accountEquity(deposited: bigint, pnlSum: bigint): bigint {
  * `bigint` makes the mirror total: unlike the Rust `Option<u64>` (which is
  * `None` only when the two-sided `u64` sum overflows), the exact sum is always
  * representable here.
- *
- * STUB: returns `0n` — the checked two-side sum lands with the cross-margin
- * implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST sweep pins the
- * contract.
  */
 export function accountMarginRequired(nLong: bigint, nShort: bigint, bps: number): bigint {
-  // STUB: `marginRequired(nLong, bps) + marginRequired(nShort, bps)` arrives
-  // with the cross-margin implementation task.
-  return 0n;
+  return marginRequired(nLong, bps) + marginRequired(nShort, bps);
 }
 
 /**
@@ -176,10 +165,6 @@ export function accountMarginRequired(nLong: bigint, nShort: bigint, bps: number
  * exposure (`nLong + nShort > 0`) and `equity < Σ_side marginRequired(n_side,
  * bps)` — a **strict** `<` (equality is healthy). A zero-exposure account is
  * never liquidatable: the short-circuit fires before the comparison.
- *
- * STUB: returns `false` — the account-level predicate lands with the
- * cross-margin implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST
- * sweep pins the contract.
  */
 export function accountLiquidatable(
   deposited: bigint,
@@ -188,7 +173,8 @@ export function accountLiquidatable(
   nShort: bigint,
   bps: number,
 ): boolean {
-  // STUB: the zero-exposure short-circuit + `equity < requirement` arrives
-  // with the cross-margin implementation task.
-  return false;
+  if (nLong + nShort === 0n) {
+    return false;
+  }
+  return accountEquity(deposited, pnlSum) < accountMarginRequired(nLong, nShort, bps);
 }

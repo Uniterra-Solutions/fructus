@@ -18,7 +18,15 @@ import {
 } from "@solana/web3.js";
 import { PROGRAM_ID } from "./constants.js";
 import { anchorIxDiscriminator, writePubkey, writeU16LE, writeU64LE, writeU8 } from "./encoding.js";
-import { marketPda, orderBookPda, oraclePda, positionPda, userCollateralPda, vaultPda } from "./pda.js";
+import {
+  marketPda,
+  operatorPda,
+  orderBookPda,
+  oraclePda,
+  positionPda,
+  userCollateralPda,
+  vaultPda,
+} from "./pda.js";
 
 // --- SPL token program ids (anchor `tokenc::Token` / `associated_token` deps) ---
 const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -464,14 +472,35 @@ export function buildLiquidate(p: {
   ], [writeU8(p.side), writeU64LE(p.amount)]);
 }
 
-// --- Operator delegation (A1) — STUBS ---------------------------------------
+// --- Operator delegation (A1) ------------------------------------------------
 //
 // REQ-A1-7: the operator surface is additive — `set_operator` + 7 `operator_*`
-// instructions (D2) plus the wallet-signable bind/revoke helpers (D4). These
-// builders land with their real signatures now; the account metas and argument
-// encodings land together with the operator red tests, so every body below is
-// a deliberate STUB (`ix(programId, "<name>", [], [])`: discriminator only,
-// no accounts, no args).
+// instructions (D2) plus the wallet-signable bind/revoke helpers (D4). The
+// account metas, borsh args and signer/writable flags below mirror the
+// program's `#[derive(Accounts)]` structs (`lib.rs`) exactly; the bind/revoke
+// helpers compose the one-time `[spl approve(Operator PDA, amount),
+// set_operator]` pair (D4), signed by the subject user alone.
+
+/**
+ * SPL Token `Approve` (tag 4): set the delegate + allowance on the subject's
+ * token account. Accounts: `[source(w), delegate(readonly), owner(signer)]`.
+ */
+function splApprove(
+  source: PublicKey,
+  delegate: PublicKey,
+  owner: PublicKey,
+  amount: bigint,
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: delegate, isSigner: false, isWritable: false },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.concat([Buffer.from([4]), writeU64LE(amount)]),
+  });
+}
 
 export interface SetOperatorParams {
   /** The subject user; the only signer, and the payer of a lazily-created record. */
@@ -484,12 +513,23 @@ export interface SetOperatorParams {
   programId?: PublicKey;
 }
 
-/** STUB: emit `set_operator(operator: Pubkey)`. */
+/**
+ * Emit `set_operator(operator: Pubkey)` — 4 accounts, `user` the only signer.
+ * Bind (a non-default key), rotate (another key) and revoke (`Pubkey::default()`)
+ * all write the same surface; the record is lazily created and never closed (D3).
+ */
 export function buildSetOperator(p: SetOperatorParams): TransactionInstruction {
-  // STUB: accounts [user(S,mut), market, operator_record(mut), system_program]
-  // + the `operator` pubkey arg land with SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "set_operator", [], []);
+  return ix(programId, "set_operator", [
+    { pubkey: p.user, isSigner: true, isWritable: true },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+  ], [writePubkey(p.operator)]);
 }
 
 export interface OperatorDepositCollateralParams {
@@ -508,14 +548,31 @@ export interface OperatorDepositCollateralParams {
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_deposit_collateral(amount: u64)`. */
+/** Emit `operator_deposit_collateral(amount: u64)` — 10 accounts. */
 export function buildOperatorDepositCollateral(
   p: OperatorDepositCollateralParams,
 ): TransactionInstruction {
-  // STUB: the 10-account list (operator S+mut first, … system_program) +
-  // `amount` land with SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_deposit_collateral", [], []);
+  return ix(programId, "operator_deposit_collateral", [
+    { pubkey: p.operator, isSigner: true, isWritable: true },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: true },
+    {
+      pubkey: p.userCollateral ?? userCollateralPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+    { pubkey: p.vault ?? vaultPda(programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.userAta, isSigner: false, isWritable: true },
+    { pubkey: p.collateralMint, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+  ], [writeU64LE(p.amount)]);
 }
 
 export interface OperatorWithdrawCollateralParams {
@@ -534,14 +591,33 @@ export interface OperatorWithdrawCollateralParams {
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_withdraw_collateral(amount: u64)`. */
+/** Emit `operator_withdraw_collateral(amount: u64)` — 12 accounts. */
 export function buildOperatorWithdrawCollateral(
   p: OperatorWithdrawCollateralParams,
 ): TransactionInstruction {
-  // STUB: the 12-account list + `amount` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_withdraw_collateral", [], []);
+  return ix(programId, "operator_withdraw_collateral", [
+    { pubkey: p.operator, isSigner: true, isWritable: false },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: true },
+    {
+      pubkey: p.userCollateral ?? userCollateralPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+    { pubkey: p.vault ?? vaultPda(programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.userAta, isSigner: false, isWritable: true },
+    { pubkey: p.collateralMint, isSigner: false, isWritable: false },
+    { pubkey: p.indexSource, isSigner: false, isWritable: false },
+    { pubkey: positionPda(p.market, p.user, 0, programId).address, isSigner: false, isWritable: false },
+    { pubkey: positionPda(p.market, p.user, 1, programId).address, isSigner: false, isWritable: false },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+  ], [writeU64LE(p.amount)]);
 }
 
 export interface OperatorOpenPositionParams {
@@ -552,20 +628,42 @@ export interface OperatorOpenPositionParams {
   indexSource: PublicKey;
   position?: PublicKey;
   userCollateral?: PublicKey;
+  /** Override the record PDA (default: derived `[OPERATOR_SEED, market, user]`). */
+  operatorRecord?: PublicKey;
   side: number;
   size: bigint;
   price: bigint;
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_open_position(side: u8, size: u64, price: u64)`. */
+/** Emit `operator_open_position(side: u8, size: u64, price: u64)` — 9 accounts. */
 export function buildOperatorOpenPosition(
   p: OperatorOpenPositionParams,
 ): TransactionInstruction {
-  // STUB: the account list + `side/size/price` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_open_position", [], []);
+  return ix(programId, "operator_open_position", [
+    { pubkey: p.operator, isSigner: true, isWritable: true },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    { pubkey: p.orderBook ?? orderBookPda(p.market, programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.indexSource, isSigner: false, isWritable: false },
+    {
+      pubkey: p.position ?? positionPda(p.market, p.user, p.side, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.userCollateral ?? userCollateralPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+  ], [writeU8(p.side), writeU64LE(p.size), writeU64LE(p.price)]);
 }
 
 export interface OperatorClosePositionParams {
@@ -576,19 +674,40 @@ export interface OperatorClosePositionParams {
   indexSource: PublicKey;
   position?: PublicKey;
   userCollateral?: PublicKey;
+  /** Override the record PDA (default: derived `[OPERATOR_SEED, market, user]`). */
+  operatorRecord?: PublicKey;
   side: number;
   size: bigint;
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_close_position(side: u8, size: u64)`. */
+/** Emit `operator_close_position(side: u8, size: u64)` — 8 accounts. */
 export function buildOperatorClosePosition(
   p: OperatorClosePositionParams,
 ): TransactionInstruction {
-  // STUB: the account list + `side/size` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_close_position", [], []);
+  return ix(programId, "operator_close_position", [
+    { pubkey: p.operator, isSigner: true, isWritable: false },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    { pubkey: p.orderBook ?? orderBookPda(p.market, programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.indexSource, isSigner: false, isWritable: false },
+    {
+      pubkey: p.position ?? positionPda(p.market, p.user, p.side, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.userCollateral ?? userCollateralPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: true,
+    },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+  ], [writeU8(p.side), writeU64LE(p.size)]);
 }
 
 export interface OperatorPlaceLimitOrderParams {
@@ -597,20 +716,31 @@ export interface OperatorPlaceLimitOrderParams {
   market: PublicKey;
   orderBook?: PublicKey;
   indexSource: PublicKey;
+  /** Override the record PDA (default: derived `[OPERATOR_SEED, market, user]`). */
+  operatorRecord?: PublicKey;
   side: number;
   price: bigint;
   size: bigint;
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_place_limit_order(side: u8, price: u64, size: u64)`. */
+/** Emit `operator_place_limit_order(side: u8, price: u64, size: u64)` — 6 accounts. */
 export function buildOperatorPlaceLimitOrder(
   p: OperatorPlaceLimitOrderParams,
 ): TransactionInstruction {
-  // STUB: the account list + `side/price/size` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_place_limit_order", [], []);
+  return ix(programId, "operator_place_limit_order", [
+    { pubkey: p.operator, isSigner: true, isWritable: false },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    { pubkey: p.orderBook ?? orderBookPda(p.market, programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.indexSource, isSigner: false, isWritable: false },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+  ], [writeU8(p.side), writeU64LE(p.price), writeU64LE(p.size)]);
 }
 
 export interface OperatorPlaceMarketOrderParams {
@@ -619,19 +749,30 @@ export interface OperatorPlaceMarketOrderParams {
   market: PublicKey;
   orderBook?: PublicKey;
   indexSource: PublicKey;
+  /** Override the record PDA (default: derived `[OPERATOR_SEED, market, user]`). */
+  operatorRecord?: PublicKey;
   side: number;
   size: bigint;
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_place_market_order(side: u8, size: u64)`. */
+/** Emit `operator_place_market_order(side: u8, size: u64)` — 6 accounts. */
 export function buildOperatorPlaceMarketOrder(
   p: OperatorPlaceMarketOrderParams,
 ): TransactionInstruction {
-  // STUB: the account list + `side/size` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_place_market_order", [], []);
+  return ix(programId, "operator_place_market_order", [
+    { pubkey: p.operator, isSigner: true, isWritable: false },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    { pubkey: p.orderBook ?? orderBookPda(p.market, programId).address, isSigner: false, isWritable: true },
+    { pubkey: p.indexSource, isSigner: false, isWritable: false },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+  ], [writeU8(p.side), writeU64LE(p.size)]);
 }
 
 export interface OperatorCancelOrderParams {
@@ -639,18 +780,28 @@ export interface OperatorCancelOrderParams {
   user: PublicKey;
   market: PublicKey;
   orderBook?: PublicKey;
+  /** Override the record PDA (default: derived `[OPERATOR_SEED, market, user]`). */
+  operatorRecord?: PublicKey;
   seq: bigint;
   programId?: PublicKey;
 }
 
-/** STUB: emit `operator_cancel_order(seq: u64)`. */
+/** Emit `operator_cancel_order(seq: u64)` — 5 accounts. */
 export function buildOperatorCancelOrder(
   p: OperatorCancelOrderParams,
 ): TransactionInstruction {
-  // STUB: the account list + `seq` land with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
   const programId = p.programId ?? PROGRAM_ID;
-  return ix(programId, "operator_cancel_order", [], []);
+  return ix(programId, "operator_cancel_order", [
+    { pubkey: p.operator, isSigner: true, isWritable: false },
+    { pubkey: p.user, isSigner: false, isWritable: false },
+    { pubkey: p.market, isSigner: false, isWritable: false },
+    { pubkey: p.orderBook ?? orderBookPda(p.market, programId).address, isSigner: false, isWritable: true },
+    {
+      pubkey: p.operatorRecord ?? operatorPda(p.market, p.user, programId).address,
+      isSigner: false,
+      isWritable: false,
+    },
+  ], [writeU64LE(p.seq)]);
 }
 
 export interface OperatorBindParams {
@@ -660,37 +811,59 @@ export interface OperatorBindParams {
   operator: PublicKey;
   /** SPL delegate allowance in raw units; the D4 flow uses `u64::MAX`. */
   approveAmount?: bigint;
+  /** The subject's own ATA — the SPL `approve` source (not derivable from `(user, market)`). */
+  userAta: PublicKey;
   operatorRecord?: PublicKey;
   programId?: PublicKey;
 }
 
 /**
- * STUB: build the wallet-signable bind transaction —
- * `[spl approve(Operator PDA, u64::MAX), set_operator(operator)]` (D4), signed
- * once by the user.
+ * Build the wallet-signable bind pair — `[spl approve(Operator PDA,
+ * approveAmount ?? u64::MAX), set_operator(operator)]` (D4), signed once by
+ * the subject user.
  */
 export function buildOperatorBindInstructions(p: OperatorBindParams): TransactionInstruction[] {
-  // STUB: the composed [approve, set_operator] pair lands with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE (bind/revoke helper composition).
-  return [];
+  const programId = p.programId ?? PROGRAM_ID;
+  const operatorRecord = p.operatorRecord ?? operatorPda(p.market, p.user, programId).address;
+  return [
+    splApprove(p.userAta, operatorRecord, p.user, p.approveAmount ?? 0xffffffffffffffffn),
+    buildSetOperator({
+      user: p.user,
+      market: p.market,
+      operator: p.operator,
+      operatorRecord,
+      programId,
+    }),
+  ];
 }
 
 export interface OperatorRevokeParams {
   user: PublicKey;
   market: PublicKey;
+  /** The subject's own ATA — the SPL `approve(0)` source. */
+  userAta: PublicKey;
   operatorRecord?: PublicKey;
   programId?: PublicKey;
 }
 
 /**
- * STUB: build the wallet-signable revoke transaction —
- * `[spl approve(Operator PDA, 0), set_operator(Pubkey::default())]`, record kept
- * (D3: revoke clears the field; no account close).
+ * Build the wallet-signable revoke pair — `[spl approve(Operator PDA, 0),
+ * set_operator(Pubkey::default())]`, signed once by the subject user. D3: the
+ * record is kept; only the stored delegate clears.
  */
 export function buildOperatorRevokeInstructions(p: OperatorRevokeParams): TransactionInstruction[] {
-  // STUB: the composed [approve(0), set_operator(default)] pair lands with
-  // SDK-OPERATOR-BUILDERS-ENCODE-THE-SURFACE.
-  return [];
+  const programId = p.programId ?? PROGRAM_ID;
+  const operatorRecord = p.operatorRecord ?? operatorPda(p.market, p.user, programId).address;
+  return [
+    splApprove(p.userAta, operatorRecord, p.user, 0n),
+    buildSetOperator({
+      user: p.user,
+      market: p.market,
+      operator: new PublicKey(new Uint8Array(32)), // Pubkey::default() — the revoke state
+      operatorRecord,
+      programId,
+    }),
+  ];
 }
 
 export { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID };

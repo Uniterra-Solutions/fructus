@@ -2,12 +2,14 @@
 //! → start REST + WS → graceful shutdown on SIGINT/SIGTERM. `npm start` /
 //! `npm run dev` run this file via tsx.
 
-import { Connection } from "@solana/web3.js";
+import { readFileSync } from "node:fs";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { PROGRAM_ID, marketPda } from "fructus-sdk/src/index.js";
 import { createApiServer } from "./api.js";
 import { createAuth } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { openDb } from "./db.js";
+import { OperatorUnconfiguredError } from "./errors.js";
 import { createFaucet } from "./faucet.js";
 import { createIndexer } from "./indexer.js";
 import { createKeeper } from "./keeper.js";
@@ -31,8 +33,51 @@ async function main(): Promise<void> {
     db,
     programId,
   });
-  const keeper = createKeeper({ connection, db, programId, intervalMs: config.keeperIntervalMs });
-  const faucet = createFaucet({ config, connection });
+  // Stage-1 operating model (R-3): the keeper reuses the operator hot key
+  // (`OPERATOR_KEYPAIR`) — its crank/settle/liquidate txs are permissionless.
+  const keeper = createKeeper({
+    connection,
+    db,
+    programId,
+    intervalMs: config.keeperIntervalMs,
+    keypairPath: config.operatorKeypairPath,
+  });
+  const faucet = createFaucet({ config, connection, db });
+
+  // The operator PUBLIC key is all `/bind/prepare` needs (the secret stays in
+  // the operator service, R-3); resolved lazily from the configured path and
+  // cached for the process lifetime.
+  let operatorPubkey: PublicKey | null = null;
+  function getOperatorPubkey(): PublicKey {
+    if (operatorPubkey !== null) return operatorPubkey;
+    const path = config.operatorKeypairPath;
+    if (path === null || path === "") {
+      throw new OperatorUnconfiguredError("OPERATOR_KEYPAIR is not set");
+    }
+    try {
+      const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!Array.isArray(raw)) throw new Error("keypair file is not a JSON array");
+      operatorPubkey = Keypair.fromSecretKey(Uint8Array.from(raw as number[])).publicKey;
+    } catch (err) {
+      throw new OperatorUnconfiguredError(
+        `cannot load the operator keypair (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+    return operatorPubkey;
+  }
+
+  // Devnet-prototype bootstrap (REQ-B-10): the operator hot key pays the fees
+  // of its own transactions, so make sure it holds lamports. Best-effort: a
+  // requestAirdrop is a no-op where the key is already funded and simply fails
+  // (logged) on networks without a faucet — a production deployment pre-funds
+  // the key out of band.
+  if (config.operatorKeypairPath !== null) {
+    try {
+      await fundOperator(connection, getOperatorPubkey());
+    } catch (err) {
+      console.warn(`fructus-server: operator funding skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const api = createApiServer({
     config,
@@ -41,19 +86,31 @@ async function main(): Promise<void> {
     operator,
     keeper,
     faucet,
+    connection,
+    programId,
+    market,
+    getOperatorPubkey,
     getPortfolio: (wallet) => computePortfolio(db, wallet, market),
     getMarket: () => computeMarket(db, market),
     getBook: () => computeBook(db, market),
+    getIndexedSlot: () => indexer.lastSlot(),
+    // `/actions/*` progress lands on the actor's own sockets as a `tx` push.
+    onAction: (wallet, action) => ws.sendToWallet(wallet.toBase58(), { type: "tx", action }),
   });
-  const ws = attachWs({ server: api.server, auth, db });
-
+  const ws = attachWs({
+    server: api.server,
+    auth,
+    market,
+    computePortfolio: (wallet) => computePortfolio(db, wallet, market),
+    computeBook: () => computeBook(db, market),
+    computeMarket: () => computeMarket(db, market),
+  });
   const indexer = createIndexer({
     connection,
     db,
     programId,
-    onUpdate: () => {
-      /* STUB: routed to ws.broadcast once the push wave lands */
-    },
+    // REQ-B-7: every indexed change fans out on the push channel.
+    onUpdate: (update) => ws.onIndexerUpdate(update),
   });
 
   const port = await api.start(config.port);
@@ -79,6 +136,19 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+/**
+ * Top up the operator hot key from the network faucet when it cannot pay fees
+ * (devnet/localnet prototype bootstrap). Never logs key material — the pubkey
+ * is public and the signature is on-chain data.
+ */
+async function fundOperator(connection: Connection, operator: PublicKey): Promise<void> {
+  const balance = await connection.getBalance(operator, "confirmed");
+  if (balance >= LAMPORTS_PER_SOL) return; // already holds fee money
+  const signature = await connection.requestAirdrop(operator, 10 * LAMPORTS_PER_SOL);
+  await connection.confirmTransaction(signature, "confirmed");
+  console.log(`fructus-server: funded the operator hot key for tx fees (${signature})`);
 }
 
 main().catch((err: unknown) => {

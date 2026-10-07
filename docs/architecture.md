@@ -5,6 +5,9 @@ Fructus is a Solana yield-futures protocol. The current codebase implements the
 jitoSOL yield), the **perpetual-market account** that binds them into a tradeable
 instrument, a fully **on-chain order book (CLOB)** whose mid is the
 market-discovered mark, and a **USDC collateral vault** for deposit/withdraw.
+Product-v2 adds the **account-level margin model** (cross margin, no netting),
+the per-`(market, user)` **operator delegation** surface, and an off-chain
+**backend** (`server/`) exposing the HTTP + WebSocket API ([api.md](api.md)).
 
 ## System Context (C4 Level 1)
 
@@ -95,3 +98,6 @@ graph TD
 | `OrderBook` is zero-copy (`#[account(zero_copy)]`) | ~21 KB account exceeds the SBF 4 KiB stack limit for borsh deserialization | Active |
 | Custom minimal CLOB (no OpenBook) | Matching is simple enough to build in-repo; aligns with the granular-crate ethos | Active |
 | USDC collateral vault PDA (self-authorized) | Only the program can move vault funds; per-user ledger separates free vs reserved collateral | Active |
+| Account-level (cross-margin, NO-netting) liquidation | 「全倉」semantics: the trigger reads the account's `equity = deposited + Σ upnl` against the summed two-side maintenance requirement; the transition targets one side (`other_position` supplies the sibling's contribution) | Active |
+| Per-`(market, user)` operator delegation (`set_operator` + `operator_*`) | Hot-key trading without a wallet signature per action: one-time SPL `approve` + record bind; every effect attributed to the subject; revocable in place (never closed) | Active |
+| Off-chain `server/` backend (SIWS login, bind relay, `/actions/*`, WS push) | The frontend contract (REQ-B-7/D14): wallet-signed bind once, operator-key UX thereafter — see [api.md](api.md) | Active |

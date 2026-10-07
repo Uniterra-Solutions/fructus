@@ -142,8 +142,9 @@ stay out — the implementer fetches context from the repository itself.
 #### REQ-A1-4 `operator_withdraw_collateral`
 
 - **Statement**: new instruction, `(amount: u64)`; pays the vault → the subject user's own ATA
-  only (mint + owner verified in-handler); same equity gate as REQ-A2-3; Operator PDA signs the
-  token transfer. Account order: `[operator (Signer), user, market, user_collateral (mut),
+  only (mint + owner verified in-handler); same equity gate as REQ-A2-3; the vault PDA (the vault
+  token account's authority) signs the token transfer — the Operator PDA is only the ATA delegate
+  for deposits (W1 deviation #2). Account order: `[operator (Signer), user, market, user_collateral (mut),
   operator_record, vault (mut), user_ata (mut), collateral_mint, index_source, position_long,
   position_short, token_program]`.
 - **Rationale**: D5 + 「出金不用額外簽名」.
