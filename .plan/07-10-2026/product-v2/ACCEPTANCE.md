@@ -41,8 +41,8 @@ measurement; see below.
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this
 block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: **freeze** — red baseline verified by main-agent re-run; implement (red→green) next
-- Freeze sha: `a741b28` (boundary commit; this record commit follows)
+- Phase: **review** — implementation green at `2d758bc`; adversarial review wave in flight
+- Freeze sha: `a741b28` (boundary); implement sha: `2d758bc`; record commits follow
 - Shards: baseline captured (Rust 251/251 green, log `baseline-nextest.log`; TS sdk 62 / cli 19 /
   publisher 9 green). **Wave A ✓** (S_P1 Rust stubs A + S3 SDK stubs; spot-checks re-run by main
   agent pass; `market (mut)` reconciled in stubs+PRD). **Wave B ✓** (R-ACC: liquidation
@@ -81,11 +81,14 @@ block FIRST after a compaction, a new session or a skill edit)
 - Holds / waivers: D6 (hedge-mode, no netting) + D17 (in-place deploy attempt) recorded as
   **defaulted — vetoable until implementation begins** (user not reached at plan time; first
   clarify round cancelled without answers)
-- Next action: **IMPLEMENT — W1 ✓ W2 ✓ W3 ✓ W4 ✓ W5 ✓ (+ AMEND-PV-1)**. Rust 262P/3F; sdk 85/85;
-  server 38P/8F (W5 signal-verified by main agent: operator 1/1, keeper 1/1). **W6 (api/ws/e2e +
-  openapi populate) ∥ W7 (docs — the 4 doc-audit tests) dispatched** → then full verdict +
-  review phase. W5 notes: `KeeperOptions.keypairPath` required (wired from OPERATOR_KEYPAIR);
-  keeper decisions read indexed state (one-refresh lag, safe direction); `OperatorUnconfiguredError`.
+- Next action: **REVIEW phase running** — implement complete at `2d758bc`; implement verdict green
+  (main-agent: Rust 265/265 + all 5 bank suites, clippy/fmt/check clean; sdk 85/85, cli 19/19,
+  publisher 9/9, server 46/46 sequential). Review subagents dispatched: A (evidence chain /
+  hollow-test audit), B1 (program PBT model), B2 (server+sdk PBT model), C (security axis), D
+  (production-wiring audit). Then: aggregate → one fixer per defect → main-agent verification →
+  ONE final full-suite run → verdict report. W5 notes retained: `KeeperOptions.keypairPath`;
+  keeper reads indexed state (one-refresh lag, safe); `OperatorUnconfiguredError`; ws `user` push
+  = delta payload (test-pinned); server full-suite runs use `--test-concurrency=1`.
 
 ## Run commands (each executed once before being written here — at red-baseline collection)
 
