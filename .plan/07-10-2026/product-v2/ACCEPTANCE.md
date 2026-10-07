@@ -108,8 +108,11 @@ block FIRST after a compaction, a new session or a skill edit)
 - Two decisions most likely to be overturned: (1) ws `user` push = signed deltas (test-pinned;
   absolute snapshots are the plausible alternative); (2) AMEND-PV-2's accept-the-wait semantics
   vs a future stream-end/eviction signal in the fold.
-- Handover: `.plan/07-10-2026/product-v2/HANDOVER.md` — devnet deploy bundle (pending owner
-  keypair, D17). `fructus` skill updated to the v2 facts. Not pushed (local commits only).
+- Handover: `.plan/07-10-2026/product-v2/HANDOVER.md`. **D17 EXECUTED 2026-10-07**: in-place
+  upgrade tx `3My7hpqT…` (Finalized; on-chain dump sha `2755e7f3` == the suite-validated artifact
+  byte-identical; data 660,960 bytes; slot 508449031) + LIVE SMOKE PASS (`set_operator` tx
+  `3uCxujbv…`; Operator PDA `3frUKPbx…` = 105 bytes, decodeOperator round-trips). `fructus`
+  skill updated to the v2 facts. Not pushed (local commits only).
 - **Pending (approval)**: the AGENTS.md v2-invariant update (health threshold → account-level +
   operator-delegation bullet) was attempted; the protected-file approval prompt timed out, so it
   is PARKED — retry when the owner is online (A-PV-5).

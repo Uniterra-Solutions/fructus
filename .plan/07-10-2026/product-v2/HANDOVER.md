@@ -6,9 +6,10 @@
   `468ba93` `7f4ada3`).
 - Final verdict green (main agent, post-fix): Rust **286/286**; sdk **86/86**; cli 19/19;
   publisher 9/9; server **100/100** (sequential); clippy/fmt/check clean.
-- The v2 program (operator delegation + account-level cross margin) is NOT yet on devnet —
-  devnet still runs the pre-v2 build. In-place upgrade is additive: no existing account layout
-  changed, no wipe needed.
+- **DEPLOYED 2026-10-07**: in-place upgrade executed (tx `3My7hpqT…`, Finalized; on-chain dump
+  sha `2755e7f3` byte-identical to the suite-validated artifact; data 660,960 bytes). Live smoke
+  PASSED (`set_operator` tx `3uCxujbv…`, Operator PDA `3frUKPbx…` decodes). The upgrade was
+  additive — no account layout changed, no wipe needed.
 
 ## Deploy bundle (owner action)
 1. Place on this machine (never via chat): the program's upgrade-authority keypair
