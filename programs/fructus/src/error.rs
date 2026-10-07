@@ -58,4 +58,8 @@ pub enum FructusError {
     InvalidCloseSize,
     #[msg("A system-owned account squats the Position PDA: the program cannot reclaim an account it does not own (use reset_position to reset a program-owned position)")]
     PositionPdaSquatted,
+    #[msg("Operator is not authorized for this user")]
+    OperatorUnauthorized,
+    #[msg("A system-owned account squats the Operator PDA: the program cannot reclaim an account it does not own")]
+    OperatorPdaSquatted,
 }

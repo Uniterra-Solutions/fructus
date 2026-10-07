@@ -66,6 +66,9 @@ export const USER_COLLATERAL_SEED = Buffer.from("user_collateral", "utf8");
 /** PDA seed for the per-`(market, user, side)` position account. */
 export const POSITION_SEED = Buffer.from("position", "utf8");
 
+/** PDA seed for the per-`(market, user)` operator-delegation record (D3). */
+export const OPERATOR_SEED = Buffer.from("operator", "utf8");
+
 /** On-chain program id (`declare_id!` in `programs/fructus/src/lib.rs`). */
 export const PROGRAM_ID = new PublicKey("3EsUd5XQ6KChedwL2ho8pv3zrrGGFvMpJEV1PnzN8MD1");
 

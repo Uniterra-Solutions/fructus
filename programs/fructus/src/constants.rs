@@ -111,3 +111,8 @@ pub const USDC_DECIMALS: u8 = 6;
 
 /// PDA seed for the per-`(market, user, side)` position account.
 pub const POSITION_SEED: &[u8] = b"position";
+
+// --- Operator delegation (product-v2 A1) ---
+
+/// PDA seed for the per-`(market, user)` operator-delegation record.
+pub const OPERATOR_SEED: &[u8] = b"operator";

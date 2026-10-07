@@ -1,0 +1,6 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Fructus API", "version": "0.1.0" },
+  "x-status": "skeleton — paths populated by the product-v2 implementation wave",
+  "paths": {}
+}

@@ -15,6 +15,7 @@ import {
   buildSettleFunding,
   buildUpdateApy,
   buildWithdrawCollateral,
+  TOKEN_PROGRAM_ID,
 } from "../src/instructions.js";
 
 // R-SDK1 smoke: every builder emits an 8-byte anchor discriminator + borsh args,
@@ -35,6 +36,15 @@ test("anchor discriminators are 8 bytes", () => {
     "place_limit_order",
     "cancel_order",
     "crank",
+    // Operator layer (REQ-A1-7): set_operator + the 7 operator_* instructions.
+    "set_operator",
+    "operator_deposit_collateral",
+    "operator_withdraw_collateral",
+    "operator_open_position",
+    "operator_close_position",
+    "operator_place_limit_order",
+    "operator_place_market_order",
+    "operator_cancel_order",
   ]) {
     assert.equal(anchorIxDiscriminator(name).length, 8, name);
   }
@@ -108,8 +118,17 @@ test("close / deposit / withdraw / settle / liquidate encode their args", () => 
   const dep = buildDepositCollateral({ user: owner, market, userCollateral: uc, vault: liq, userAta: owner, collateralMint: market, amount: 10_000_000n });
   assert.deepEqual(dep.data.subarray(8), writeU64(10_000_000n));
 
-  const wd = buildWithdrawCollateral({ user: owner, market, userCollateral: uc, vault: liq, userAta: owner, collateralMint: market, amount: 8_000_000n });
+  const wd = buildWithdrawCollateral({ user: owner, market, userCollateral: uc, vault: liq, userAta: owner, collateralMint: market, indexSource, amount: 8_000_000n });
   assert.deepEqual(wd.data.subarray(8), writeU64(8_000_000n));
+  // Appendix order: user(S,w), market, user_collateral, vault, user_ata,
+  // collateral_mint, index_source, position_long, position_short, token_program.
+  assert.equal(wd.keys.length, 10);
+  assert.equal(wd.keys[0].isSigner, true);
+  assert.equal(wd.keys[0].isWritable, true);
+  assert.equal(wd.keys[6].pubkey.toBase58(), indexSource.toBase58());
+  assert.equal(wd.keys[7].isWritable, false); // position_long (readonly)
+  assert.equal(wd.keys[8].isWritable, false); // position_short (readonly)
+  assert.equal(wd.keys[9].pubkey.toBase58(), TOKEN_PROGRAM_ID.toBase58());
 
   const sf = buildSettleFunding({ market, position: pos, userCollateral: uc, indexSource });
   assert.equal(sf.data.subarray(8).length, 0);
@@ -119,11 +138,20 @@ test("close / deposit / withdraw / settle / liquidate encode their args", () => 
   assert.equal(sc.data.subarray(8).length, 0);
   assert.equal(sc.keys.length, 4);
 
-  const li = buildLiquidate({ market, position: pos, userCollateral: uc, indexSource, liquidator: liq, amount: 3_000n });
-  assert.deepEqual(li.data.subarray(8), writeU64(3_000n));
+  const other = PublicKey.unique();
+  const li = buildLiquidate({ market, position: pos, otherPosition: other, userCollateral: uc, indexSource, liquidator: liq, side: 1, amount: 3_000n });
+  assert.deepEqual(li.data.subarray(8), concat(Buffer.from([1]), writeU64(3_000n)));
+  // Appendix order: market, position, other_position, user_collateral,
+  // order_book, index_source, liquidator(S), liquidator_collateral.
+  assert.equal(li.keys.length, 8);
+  assert.equal(li.keys[2].pubkey.toBase58(), other.toBase58());
+  assert.equal(li.keys[2].isWritable, false);
   // liquidator is a signer but not writable; liquidator_collateral writable.
   const lkPos = li.keys.findIndex((k) => k.pubkey.toBase58() === liq.toBase58());
+  assert.equal(lkPos, 6);
   assert.equal(li.keys[lkPos].isSigner, true);
+  assert.equal(li.keys[6].isWritable, false);
+  assert.equal(li.keys[7].isWritable, true);
 });
 
 test("buildResetPosition encodes side", () => {

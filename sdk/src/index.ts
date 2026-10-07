@@ -22,3 +22,6 @@ export * from "./instructions.js";
 
 // Transaction v1 opt-in send path (issue #19).
 export * from "./v1.js";
+
+// Shared REST + WS DTO types for the server and the future frontend (REQ-C-3).
+export * from "./api.js";

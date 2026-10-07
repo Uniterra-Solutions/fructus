@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use anchor_lang::{AccountDeserialize, InstructionData};
-use fructus::constants::{PERP_MARKET_SEED, USER_COLLATERAL_SEED, VAULT_SEED};
+use fructus::constants::{PERP_MARKET_SEED, POSITION_SEED, USER_COLLATERAL_SEED, VAULT_SEED};
 use fructus::error::FructusError;
 use fructus::exchange::STAKE_POOL_PROGRAM_ID;
 use fructus::state::UserCollateral;
@@ -101,6 +101,9 @@ struct Env {
     market: Pubkey,
     vault: Pubkey,
     mint: Pubkey,
+    /// The market-bound index source (fake jitoSOL stake pool) recorded by
+    /// `initialize_market`; `withdraw_collateral` re-checks the address.
+    index_source: Pubkey,
     user: Keypair,
     user_ata: Pubkey,
     user_collateral: Pubkey,
@@ -145,10 +148,12 @@ async fn setup(decimals: u8) -> Option<Env> {
     );
 
     // Fake index-source (jitoSOL stake pool) account, owned by the stake-pool
-    // program, so `initialize_market` accepts it.
-    let stake_pool = Pubkey::new_from_array([9u8; 32]);
+    // program, so `initialize_market` accepts it. Kept on `Env` because
+    // `withdraw_collateral` takes it again (address-checked against
+    // `market.index_source`) for the equity gate.
+    let index_source = Pubkey::new_from_array([9u8; 32]);
     pt.add_account(
-        stake_pool,
+        index_source,
         Account {
             lamports: FUNDING_LAMPORTS,
             data: fake_stake_pool_data(),
@@ -241,7 +246,7 @@ async fn setup(decimals: u8) -> Option<Env> {
         program_id,
         accounts: vec![
             AccountMeta::new(market, false),                     // market (init)
-            AccountMeta::new_readonly(stake_pool, false),        // index_source
+            AccountMeta::new_readonly(index_source, false),      // index_source
             AccountMeta::new_readonly(ctx.payer.pubkey(), true), // authority (signer)
             AccountMeta::new(ctx.payer.pubkey(), true),          // payer (signer, mut)
             AccountMeta::new_readonly(system_program_id(), false), // system_program
@@ -267,6 +272,7 @@ async fn setup(decimals: u8) -> Option<Env> {
         market,
         vault,
         mint: mint.pubkey(),
+        index_source,
         user,
         user_ata,
         user_collateral,
@@ -335,6 +341,31 @@ async fn deposit(env: &mut Env, amount: u64) -> Result<(), BanksClientError> {
 
 async fn withdraw(env: &mut Env, amount: u64) -> Result<(), BanksClientError> {
     let data = fructus::instruction::WithdrawCollateral { amount }.data();
+    // The per-`(market, user, side)` position PDAs the account-level equity
+    // gate reads (`Σ upnl` per side), derived from the PRD Appendix slot
+    // layout. These tests never open a position, so both sides are pristine
+    // (not created yet) — passed read-only and worth zero unrealized PnL to
+    // the handler.
+    let position_long = Pubkey::find_program_address(
+        &[
+            POSITION_SEED,
+            env.market.as_ref(),
+            env.user.pubkey().as_ref(),
+            &[0], // Side::Long
+        ],
+        &fructus::ID,
+    )
+    .0;
+    let position_short = Pubkey::find_program_address(
+        &[
+            POSITION_SEED,
+            env.market.as_ref(),
+            env.user.pubkey().as_ref(),
+            &[1], // Side::Short
+        ],
+        &fructus::ID,
+    )
+    .0;
     let ix = Instruction {
         program_id: fructus::ID,
         accounts: vec![
@@ -344,6 +375,9 @@ async fn withdraw(env: &mut Env, amount: u64) -> Result<(), BanksClientError> {
             AccountMeta::new(env.vault, false),                 // vault (mut)
             AccountMeta::new(env.user_ata, false),              // user_ata (mut)
             AccountMeta::new_readonly(env.mint, false),         // collateral_mint
+            AccountMeta::new_readonly(env.index_source, false), // index_source
+            AccountMeta::new_readonly(position_long, false),    // position_long
+            AccountMeta::new_readonly(position_short, false),   // position_short
             AccountMeta::new_readonly(spl_token::id(), false),  // token_program
         ],
         data,

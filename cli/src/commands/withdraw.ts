@@ -45,6 +45,8 @@ export async function build(cfg: TraderConfig, args: ParsedArgs): Promise<DryRun
     vault,
     userAta,
     collateralMint: cfg.collateralMint,
+    // REQ-A2-3/D9: the equity gate reads Σ upnl via the market's index source.
+    indexSource: cfg.indexSource,
     amount,
     programId: cfg.programId,
   });

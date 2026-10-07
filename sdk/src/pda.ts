@@ -4,6 +4,7 @@
 
 import { PublicKey } from "@solana/web3.js";
 import {
+  OPERATOR_SEED,
   ORACLE_SEED,
   ORDER_BOOK_SEED,
   PERP_MARKET_SEED,
@@ -72,6 +73,19 @@ export function positionPda(
 ): Pda {
   const [address, bump] = PublicKey.findProgramAddressSync(
     [POSITION_SEED, market.toBuffer(), user.toBuffer(), Buffer.from([side & 0xff])],
+    programId,
+  );
+  return { address, bump };
+}
+
+/** Derive the per-`(market, user)` operator record PDA: `[OPERATOR_SEED, market, user]`. */
+export function operatorPda(
+  market: PublicKey,
+  user: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): Pda {
+  const [address, bump] = PublicKey.findProgramAddressSync(
+    [OPERATOR_SEED, market.toBuffer(), user.toBuffer()],
     programId,
   );
   return { address, bump };

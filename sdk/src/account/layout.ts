@@ -61,6 +61,17 @@ export const UserCollateralLayout = {
   bump: 24,
 } as const;
 
+// --- Operator (borsh `#[account]`), payload LEN = 97 ------------------------
+// Per-`(market, user)` delegation record (D3): the `operator` field holds the
+// delegate key, or `Pubkey::default()` when revoked.
+export const OPERATOR_LEN = 97;
+export const OperatorLayout = {
+  market: 0,
+  user: 32,
+  operator: 64,
+  bump: 96,
+} as const;
+
 // --- YieldOracle (borsh `#[account]`), payload LEN = 97 ---------------------
 export const YIELD_ORACLE_LEN = 97;
 export const YieldOracleLayout = {

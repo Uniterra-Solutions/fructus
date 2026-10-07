@@ -183,6 +183,29 @@ export function decodeYieldOracle(data: Buffer | null): YieldOracleState | null 
 }
 
 // ---------------------------------------------------------------------------
+// Operator
+// ---------------------------------------------------------------------------
+
+export interface OperatorState {
+  market: PublicKey;
+  user: PublicKey;
+  /** The delegate key; `PublicKey.default` ⇒ revoked (record kept). */
+  operator: PublicKey;
+  bump: number;
+}
+
+/**
+ * STUB: decode the 97-byte `Operator` payload. Returns `null` until the real
+ * field reads (`DISCRIMINATOR + OperatorLayout.*`) land with
+ * SDK-OPERATOR-DECODER-ROUNDTRIPS.
+ */
+export function decodeOperator(data: Buffer | Uint8Array | null): OperatorState | null {
+  // STUB: layout offsets live in `layout.ts` (OPERATOR_LEN = 97, market@0,
+  // user@32, operator@64, bump@96); short buffers will yield `null`.
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // OrderBook (zero-copy)
 // ---------------------------------------------------------------------------
 

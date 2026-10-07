@@ -621,7 +621,7 @@ proptest! {
         if let Some(nd) = deposit(d, a) {
             prop_assert_eq!(nd, d + a);
             let expect = if w <= nd { Some(nd - w) } else { None };
-            prop_assert_eq!(withdraw(nd, 0, w), expect);
+            prop_assert_eq!(withdraw(nd, 0, 0, w), expect);
         }
     }
 }
@@ -791,9 +791,9 @@ fn twap_within_range() {
 #[test]
 fn collateral_boundary_edges() {
     assert_eq!(deposit(u64::MAX, 1), None, "deposit overflow -> None");
-    assert_eq!(withdraw(0, 0, 1), None, "withdraw > free -> None");
-    assert_eq!(withdraw(10, 5, 6), None, "amount > free (10-5) -> None");
-    assert_eq!(withdraw(10, 5, 5), Some(5), "exactly free -> Some");
+    assert_eq!(withdraw(0, 0, 0, 1), None, "withdraw > free -> None");
+    assert_eq!(withdraw(10, 5, 0, 6), None, "amount > free (10-5) -> None");
+    assert_eq!(withdraw(10, 5, 0, 5), Some(5), "exactly free -> Some");
 }
 
 // --- Review regression tests (green) ---------------------------------------
@@ -2444,6 +2444,313 @@ mod conservation_adversarial_tests {
             "Σ deposited conserved at 200 USDC ({} before == {} after) — no mint",
             sum_before / 1_000_000,
             sum_after / 1_000_000
+        );
+    }
+}
+
+// --- Product-v2 doc-audit suite (D19: REQ-A1-8, REQ-A2-6, REQ-A2-7, REQ-C-4) --
+//
+// Source-embedding audits in the T3/T5/T6 tradition: each test pins its
+// deliverable to concrete markers with the marker named in the failure
+// message. Files that exist today are embedded with `include_str!` (no CWD
+// dependence); files the product-v2 wave creates (`docs/api.md`,
+// `docs/api/ws.md`) are read at TEST RUNTIME, so their absence fails the
+// assertion rather than the build — a missing file must never be a compile
+// error.
+
+/// Read a docs file (path relative to the crate manifest dir) at test runtime.
+/// A missing/unreadable file is an assertion failure carrying the path — never
+/// a compile error (the file may not exist yet). Note the one-level difference
+/// from the `include_str!` sites: those resolve relative to this source file
+/// (`src/tests.rs`), so they carry one extra `../`.
+fn read_doc(rel: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "required docs file `{}` is missing or unreadable: {e}",
+            path.display()
+        )
+    })
+}
+
+/// The eight operator instructions REQ-A1 adds to the program surface; each
+/// must be named in `docs/api-reference.md` (REQ-A1-8 / D19).
+const OPERATOR_INSTRUCTIONS: [&str; 8] = [
+    "set_operator",
+    "operator_deposit_collateral",
+    "operator_withdraw_collateral",
+    "operator_open_position",
+    "operator_close_position",
+    "operator_place_limit_order",
+    "operator_place_market_order",
+    "operator_cancel_order",
+];
+
+/// REQ-A1-8 / DOCS-OPERATOR-SURFACE-COMPLETE (RED on the pre-wave docs): the
+/// instruction reference gains all eight operator rows and `data-models.md`
+/// gains the `Operator` layout row (97 bytes). Markers: each instruction name
+/// verbatim in `docs/api-reference.md`; an `Operator`+`97` line (or an
+/// `Operator` mention with the literal `97 bytes`) in `docs/data-models.md`.
+#[test]
+fn docs_operator_surface_complete() {
+    let api = include_str!("../../../docs/api-reference.md");
+    for name in OPERATOR_INSTRUCTIONS {
+        assert!(
+            api.contains(name),
+            "docs/api-reference.md must name the new instruction `{name}` \
+             (REQ-A1-8 / DOCS-OPERATOR-SURFACE-COMPLETE)"
+        );
+    }
+
+    let models = include_str!("../../../docs/data-models.md");
+    let operator_row = models
+        .lines()
+        .any(|l| l.contains("Operator") && l.contains("97"))
+        || (models.contains("Operator") && models.contains("97 bytes"));
+    assert!(
+        operator_row,
+        "docs/data-models.md must carry an `Operator` row stating its 97-byte layout \
+         (a line naming `Operator` and `97`, or an `Operator` mention with the literal \
+         `97 bytes`; REQ-A1-8)"
+    );
+}
+
+/// The stale per-position liquidation definitions the account-level model
+/// (D8 / REQ-A2-6) superseded. Their reappearance anywhere under `src/` or
+/// `tests/` revives the removed per-position path.
+const STALE_PER_POSITION_FNS: [&str; 3] = [
+    "pub fn liquidatable(",
+    "fn equity(",
+    "fn maintenance_margin(",
+];
+
+/// REQ-A2-6 / NO-PER-POSITION-LIQUIDATION-REMAINS — **GREEN today: this is a
+/// pin, not a red.** The per-position engine is already gone; the guard keeps
+/// it gone. Positive control: the account-level definitions
+/// (`account_liquidatable`, `account_liquidation_loss`) must exist in
+/// `liquidation.rs`. Failure modes: a resurrected `liquidatable` / `equity` /
+/// `maintenance_margin` definition anywhere under `src/` or `tests/`, or a
+/// `maintenance_bps` parameter sneaking back into `apply_liquidation`'s
+/// signature (the surviving collateral is always re-derived at the INITIAL
+/// margin ratio — `maintenance` is the health threshold only).
+#[test]
+fn no_per_position_liquidation_remains() {
+    // Positive control: the account-level model is present.
+    let liq = include_str!("liquidation.rs");
+    assert!(
+        liq.contains("fn account_liquidatable"),
+        "liquidation.rs must define the account-level predicate `fn account_liquidatable` \
+         (positive control for NO-PER-POSITION-LIQUIDATION-REMAINS)"
+    );
+    assert!(
+        liq.contains("fn account_liquidation_loss"),
+        "liquidation.rs must define `fn account_liquidation_loss` \
+         (positive control for NO-PER-POSITION-LIQUIDATION-REMAINS)"
+    );
+
+    // The stale per-position definitions are gone from liquidation.rs.
+    for stale in STALE_PER_POSITION_FNS {
+        assert!(
+            !liq.contains(stale),
+            "liquidation.rs still contains the superseded per-position definition `{stale}`"
+        );
+    }
+
+    // `apply_liquidation` must not take a maintenance-bps parameter again.
+    // The signature slice is checked for `maintenance_bps` / `_maintenance_bps`
+    // (positive control: it does carry `initial_margin_bps` and `penalty_bps`).
+    let sig_start = liq
+        .find("pub fn apply_liquidation(")
+        .expect("apply_liquidation must exist in liquidation.rs");
+    let sig_end = sig_start
+        + liq[sig_start..]
+            .find(" -> std::result::Result")
+            .expect("apply_liquidation must return std::result::Result");
+    let sig = &liq[sig_start..sig_end];
+    assert!(
+        sig.contains("initial_margin_bps") && sig.contains("penalty_bps"),
+        "the apply_liquidation signature slice is missing its \
+         `initial_margin_bps`/`penalty_bps` positive controls; got: {sig}"
+    );
+    assert!(
+        !sig.contains("maintenance_bps") && !sig.contains("_maintenance_bps"),
+        "apply_liquidation must not take a maintenance_bps / _maintenance_bps parameter \
+         (the surviving collateral is re-derived at the initial margin ratio); got: {sig}"
+    );
+
+    // Whole-tree scan: no .rs file under src/ or tests/ revives the fns. The
+    // audit's own file necessarily embeds the marker strings above, so it is
+    // excluded. `file!()` is workspace-root-relative in this workspace
+    // (`programs/fructus/src/tests.rs`), so match its `src/`-rooted suffix
+    // against the manifest-relative scan paths.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for sub in ["src", "tests"] {
+        let dir = manifest.join(sub);
+        if dir.is_dir() {
+            collect_rs_files(&dir, &mut files);
+        }
+    }
+    assert!(
+        !files.is_empty(),
+        "NO-PER-POSITION-LIQUIDATION-REMAINS scan found no .rs files under src/ or \
+         tests/ — the scan would be vacuous"
+    );
+    let own_rel: &str = {
+        let f = file!();
+        match f.rfind("src/") {
+            Some(i) => &f[i..],
+            None => f,
+        }
+    };
+    for path in files {
+        if path.ends_with(own_rel) {
+            continue; // this audit file itself carries the marker strings
+        }
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        for stale in STALE_PER_POSITION_FNS {
+            assert!(
+                !src.contains(stale),
+                "{}: the superseded per-position definition `{stale}` reappeared \
+                 (REQ-A2-6 / NO-PER-POSITION-LIQUIDATION-REMAINS)",
+                path.display()
+            );
+        }
+    }
+}
+
+/// The exact superseded sentence REQ-A2-7 removes when `docs/modules/
+/// liquidation.md` is rewritten to the account-level model.
+const STALE_PER_POSITION_SENTENCE: &str =
+    "position is liquidatable iff its equity is **strictly** below";
+
+/// REQ-A2-7 / DOCS-ACCOUNT-MARGIN-MODEL (RED on the pre-wave docs). Exact
+/// markers, so the implementation wave can satisfy them:
+/// (a) `docs/modules/liquidation.md` contains `account-level`, contains
+///     `account_liquidatable`, keeps `equity` + `deposited` — and no longer
+///     contains the exact old sentence [`STALE_PER_POSITION_SENTENCE`];
+/// (b) the `docs/api-reference.md` `liquidate` ROW (the line starting
+///     `| \`liquidate\``) contains `side` and `other_position`;
+/// (c) `docs/modules/collateral.md` contains `equity` (the withdraw gate).
+#[test]
+fn docs_account_margin_model() {
+    // (a) liquidation.md — the account-level rewrite.
+    let liq = read_doc("../../docs/modules/liquidation.md");
+    assert!(
+        liq.contains("account-level"),
+        "docs/modules/liquidation.md must document the account-level model \
+         (marker: `account-level`; REQ-A2-7)"
+    );
+    assert!(
+        liq.contains("account_liquidatable"),
+        "docs/modules/liquidation.md must name the account-level predicate \
+         `account_liquidatable` (REQ-A2-7)"
+    );
+    assert!(
+        liq.contains("equity") && liq.contains("deposited"),
+        "docs/modules/liquidation.md must state the account equity model \
+         `equity = deposited + Σ upnl` (markers: `equity`, `deposited`)"
+    );
+    assert!(
+        !liq.contains(STALE_PER_POSITION_SENTENCE),
+        "docs/modules/liquidation.md still carries the superseded per-position \
+         sentence `{STALE_PER_POSITION_SENTENCE}` — the account-level rewrite \
+         (REQ-A2-7) must remove it"
+    );
+
+    // (b) api-reference.md — the `liquidate` row carries the new signature.
+    let api = read_doc("../../docs/api-reference.md");
+    let row = api
+        .lines()
+        .find(|l| l.trim_start().starts_with("| `liquidate`"))
+        .expect("docs/api-reference.md must have a `liquidate` instruction row");
+    assert!(
+        row.contains("side"),
+        "the `liquidate` row in docs/api-reference.md must document the new \
+         `side` argument (REQ-A2-7/D8); got: {row}"
+    );
+    assert!(
+        row.contains("other_position"),
+        "the `liquidate` row in docs/api-reference.md must document the \
+         `other_position` account (REQ-A2-7/D8); got: {row}"
+    );
+
+    // (c) collateral.md — the withdraw gate gains the equity half.
+    let col = read_doc("../../docs/modules/collateral.md");
+    assert!(
+        col.contains("equity"),
+        "docs/modules/collateral.md must document the withdraw equity gate \
+         (marker: `equity`; D9/REQ-A2-7)"
+    );
+}
+
+/// The exact REST surface (REQ-B-7): the 16 routes `docs/api.md` must name.
+const API_ROUTES: [&str; 16] = [
+    "/auth/challenge",
+    "/auth/verify",
+    "/bind/prepare",
+    "/bind/confirm",
+    "/me",
+    "/me/positions",
+    "/me/history",
+    "/market",
+    "/market/book",
+    "/actions/deposit",
+    "/actions/withdraw",
+    "/actions/orders",
+    "/actions/orders/cancel",
+    "/actions/positions/close",
+    "/faucet",
+    "/healthz",
+];
+
+/// The four WS push message types (REQ-B-7: `{type: 'book'|'mark'|'user'|'tx'}`).
+const WS_MESSAGE_TYPES: [&str; 4] = ["book", "mark", "user", "tx"];
+
+/// REQ-C-4 / DOCS-API-SURFACE-COMPLETE (RED on the pre-wave docs — `docs/api.md`
+/// and `docs/api/ws.md` do not exist yet, hence the RUNTIME reads). Markers:
+/// (a) `docs/api.md` names each of the 16 route paths verbatim;
+/// (b) `docs/api/ws.md` names each WS type as `'book'` / `"book"` /
+///     `` `book` `` (single-quoted, double-quoted or backticked);
+/// (c) `docs/README.md` links `api.md` and `modules/operator.md` in an
+///     `](…)` / `(…)` reference (an optional `./` prefix is accepted).
+#[test]
+fn docs_api_surface_complete() {
+    let api = read_doc("../../docs/api.md");
+    for route in API_ROUTES {
+        assert!(
+            api.contains(route),
+            "docs/api.md must name the route `{route}` (REQ-B-7/REQ-C-4)"
+        );
+    }
+
+    let ws = read_doc("../../docs/api/ws.md");
+    for ty in WS_MESSAGE_TYPES {
+        let named = ws.contains(&format!("'{ty}'"))
+            || ws.contains(&format!("\"{ty}\""))
+            || ws.contains(&format!("`{ty}`"));
+        assert!(
+            named,
+            "docs/api/ws.md must document the `{ty}` push message type \
+             (REQ-B-7: `{{type: 'book'|'mark'|'user'|'tx', ...}}`)"
+        );
+    }
+
+    let readme = read_doc("../../docs/README.md");
+    for target in ["api.md", "modules/operator.md"] {
+        let linked = [
+            format!("]({target}"),
+            format!("](./{target}"),
+            format!("({target})"),
+            format!("(./{target})"),
+        ]
+        .iter()
+        .any(|marker| readme.contains(marker.as_str()));
+        assert!(
+            linked,
+            "docs/README.md must index `{target}` as a link \
+             (e.g. `[{target}]({target})`; REQ-C-4)"
         );
     }
 }

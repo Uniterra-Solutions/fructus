@@ -348,6 +348,36 @@ impl Position {
     pub const LEN: usize = 32 + 32 + 1 + 8 + 16 + 16 + 8 + 8 + 8 + 16 + 16 + 8 + 1;
 }
 
+// --- Operator delegation (product-v2 A1) ---
+
+/// Per-`(market, user)` operator-delegation record, one PDA per user per market.
+///
+/// Seed `[OPERATOR_SEED, market.key(), user.key()]` (see
+/// [`crate::constants::OPERATOR_SEED`] = `b"operator"`). Lazily created on the
+/// first `set_operator` (payer = user), overwritten on rotate, and cleared to
+/// `Pubkey::default()` on revoke — the record is never closed. `operator` is
+/// the delegated signer for the subject's `operator_*` instructions;
+/// `Pubkey::default()` means "no authorization" (revoked).
+#[account]
+pub struct Operator {
+    /// The market this delegation is scoped to (also present in the PDA seed).
+    pub market: Pubkey,
+    /// The subject user whose funds and orders the operator may act on (also
+    /// present in the PDA seed).
+    pub user: Pubkey,
+    /// The delegated signer; `Pubkey::default()` means the delegation is revoked.
+    pub operator: Pubkey,
+    /// PDA bump seed.
+    pub bump: u8,
+}
+
+impl Operator {
+    /// Serialized size of the account payload (excluding the 8-byte discriminator).
+    ///
+    /// Packed borsh layout: `market(32) + user(32) + operator(32) + bump(1) = 97`.
+    pub const LEN: usize = 32 + 32 + 32 + 1;
+}
+
 /// Pure staleness predicate (saturating, overflow-safe for any `u64` inputs).
 ///
 /// `is_stale(last, window, cur) == cur.saturating_sub(last) >= window`.
@@ -406,7 +436,9 @@ pub fn update_message(oracle: &Pubkey, apy: u64, version: u64) -> [u8; 32] {
 mod tests {
     use anchor_lang::prelude::*;
 
-    use super::{Observation, Order, OrderBook, OutEvent, PerpMarket, Position, UserCollateral};
+    use super::{
+        Observation, Operator, Order, OrderBook, OutEvent, PerpMarket, Position, UserCollateral,
+    };
 
     /// Every zero-copy `LEN` constant must equal the in-memory `#[repr(C)]` size
     /// of its type — the exact invariant the `space = 8 + LEN` constraints rely
@@ -493,6 +525,24 @@ mod tests {
         assert_eq!(PerpMarket::LEN, 205);
     }
 
+    /// `Operator` is a borsh `#[account]`; its `LEN` must equal the packed
+    /// borsh payload size (excluding the discriminator), and both must be the
+    /// documented 97 bytes (product-v2 REQ-A1-1).
+    #[test]
+    fn operator_len_pins_the_borsh_payload() {
+        let operator = Operator {
+            market: Pubkey::new_unique(),
+            user: Pubkey::new_unique(),
+            operator: Pubkey::new_unique(),
+            bump: 254,
+        };
+        let payload = borsh::to_vec(&operator).unwrap();
+        assert_eq!(payload.len(), Operator::LEN);
+        // Pin the documented size so a field/constant edit cannot drift it.
+        assert_eq!(Operator::LEN, 97);
+        assert_eq!(payload.len(), 97);
+    }
+
     /// The `Position` PDA seed `[POSITION_SEED, market, user, side]` must
     /// round-trip: `create_program_address` fed the bump that
     /// `find_program_address` returned reproduces the PDA, for both side
@@ -521,6 +571,27 @@ mod tests {
             // Byte-level compare per AGENTS.md (no type-identity dependence).
             assert_eq!(pda.as_ref(), created.as_ref());
         }
+    }
+
+    /// The `Operator` PDA seed `[OPERATOR_SEED, market, user]` must round-trip:
+    /// `create_program_address` fed the bump that `find_program_address`
+    /// returned reproduces the PDA (product-v2 REQ-A1-1).
+    #[test]
+    fn operator_pda_seed_round_trip() {
+        use crate::constants::OPERATOR_SEED;
+
+        let market = Pubkey::new_unique();
+        let user = Pubkey::new_unique();
+        let seeds: &[&[u8]] = &[OPERATOR_SEED, market.as_ref(), user.as_ref()];
+        let (pda, bump) = Pubkey::find_program_address(seeds, &crate::ID);
+        // `create_program_address` re-derives the PDA from the same seeds plus
+        // the bump byte `find_program_address` returned; an `Operator` account
+        // stores exactly that `bump` to re-derive on every access.
+        let bump_seed = [bump];
+        let full_seeds: &[&[u8]] = &[OPERATOR_SEED, market.as_ref(), user.as_ref(), &bump_seed];
+        let created = Pubkey::create_program_address(full_seeds, &crate::ID).unwrap();
+        // Byte-level compare per AGENTS.md (no type-identity dependence).
+        assert_eq!(pda.as_ref(), created.as_ref());
     }
 
     /// `OrderBook::default()` must be the all-zero canonical value — identical to

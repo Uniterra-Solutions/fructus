@@ -1,0 +1,24 @@
+{
+  "name": "fructus-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fructus product-v2 backend service (D11): chain indexer, state layer, SIWS auth, operator relay, keeper, REST + WebSocket API.",
+  "scripts": {
+    "test": "tsx --test --test-force-exit test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.99.0",
+    "fructus-sdk": "file:../sdk",
+    "ws": "^8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "@types/ws": "^8",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

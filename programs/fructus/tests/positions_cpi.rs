@@ -30,7 +30,8 @@ use fructus::constants::{
 };
 use fructus::error::FructusError;
 use fructus::exchange::STAKE_POOL_PROGRAM_ID;
-use fructus::state::{OrderBook, Position, UserCollateral};
+use fructus::positions::PositionSide;
+use fructus::state::{OrderBook, PerpMarket, Position, UserCollateral};
 use solana_account::{Account, AccountSharedData};
 use solana_instruction::error::InstructionError as SolanaInstructionError;
 use solana_instruction::{AccountMeta, Instruction};
@@ -62,6 +63,13 @@ const SHORT: u8 = 1;
 const BASE_TOTAL_LAMPORTS: u64 = 10_000_000_000_000;
 /// Fake stake-pool `pool_token_supply` (rate 1.0 when `total_lamports` matches).
 const BASE_POOL_TOKEN_SUPPLY: u64 = 10_000_000_000_000;
+/// Maintenance margin in basis points: the market is initialized with `500`
+/// (half the initial `1_000`), so the account-level liquidation trigger fires
+/// once unrealized losses push equity below `Σ m(n_i, 500)`.
+const MAINTENANCE_MARGIN_BPS: u16 = 500;
+/// Liquidator penalty share of the released collateral, in basis points —
+/// mirrors `constants::LIQUIDATION_PENALTY_BPS`.
+const LIQUIDATION_PENALTY_BPS: u16 = 500;
 
 /// The system program id is the all-zero pubkey (`11111111111111111111111111111111`).
 fn system_program_id() -> Pubkey {
@@ -499,6 +507,11 @@ async fn deposit(env: &mut Env, user: &User, amount: u64) -> Result<(), BanksCli
     submit(&mut env.ctx, vec![ix], &[user.keypair.as_ref()]).await
 }
 
+/// `withdraw_collateral(amount)` — the v2 account set (PRD Appendix): user (S),
+/// market (mut), user_collateral (mut), vault (mut), user_ata (mut),
+/// collateral_mint, index_source, position_long, position_short, token_program
+/// (the two Position PDAs feed the Σ upnl equity gate; pristine sides read as
+/// zero).
 async fn withdraw(env: &mut Env, user: &User, amount: u64) -> Result<(), BanksClientError> {
     let data = fructus::instruction::WithdrawCollateral { amount }.data();
     let ix = Instruction {
@@ -510,6 +523,9 @@ async fn withdraw(env: &mut Env, user: &User, amount: u64) -> Result<(), BanksCl
             AccountMeta::new(env.vault, false),                     // vault (mut)
             AccountMeta::new(user.ata, false),                      // user_ata (mut)
             AccountMeta::new_readonly(env.mint, false),             // collateral_mint
+            AccountMeta::new_readonly(env.stake_pool, false),       // index_source
+            AccountMeta::new_readonly(user.long, false),            // position_long
+            AccountMeta::new_readonly(user.short, false),           // position_short
             AccountMeta::new_readonly(spl_token::id(), false),      // token_program
         ],
         data,
@@ -654,6 +670,86 @@ async fn crank(env: &mut Env, index_source: Option<&Pubkey>) -> Result<(), Banks
     submit(&mut env.ctx, vec![ix], &[]).await
 }
 
+/// The opposite book side byte (`0` = Long/Bid `1` = Short/Ask).
+fn opposite(side: u8) -> u8 {
+    if side == LONG {
+        SHORT
+    } else {
+        LONG
+    }
+}
+
+/// Open one maker-side position for `maker`: rest a non-crossing `side` limit
+/// order at `price`, have `taker` market-take it (the opposite side), then
+/// settle the maker's deferred fill at ring `seq`. The fill-time index
+/// snapshot is the stake pool's *current* rate — set it before calling so the
+/// maker's entry basis is deterministic.
+async fn open_maker_position(
+    env: &mut Env,
+    maker: &User,
+    taker: &User,
+    side: u8,
+    size: u64,
+    price: u64,
+    seq: u64,
+) -> Result<(), BanksClientError> {
+    open_position(env, maker, side, size, price, None).await?;
+    open_position(env, taker, opposite(side), size, 0, None).await?;
+    settle_fill(env, seq, &maker.position(side), &maker.user_collateral).await
+}
+
+/// `liquidate(side, amount)` — the ACCOUNT-level liquidation (product-v2 A2,
+/// D8): market (mut), position (mut), other_position (the opposite side's
+/// Position PDA, readonly), user_collateral (mut), order_book (mut),
+/// index_source, liquidator (signer), liquidator_collateral (mut). The order
+/// matches the `Liquidate` Accounts struct in lib.rs and the PRD Appendix.
+async fn liquidate(
+    env: &mut Env,
+    victim: &User,
+    liquidator: &User,
+    side: u8,
+    amount: u64,
+) -> Result<(), BanksClientError> {
+    let data = fructus::instruction::Liquidate { side, amount }.data();
+    let ix = Instruction {
+        program_id: fructus::ID,
+        accounts: vec![
+            AccountMeta::new(env.market, false),            // market (mut)
+            AccountMeta::new(victim.position(side), false), // position (mut)
+            AccountMeta::new_readonly(victim.position(opposite(side)), false), // other_position
+            AccountMeta::new(victim.user_collateral, false), // user_collateral (mut)
+            AccountMeta::new(env.order_book, false),        // order_book (mut)
+            AccountMeta::new_readonly(env.stake_pool, false), // index_source
+            AccountMeta::new_readonly(liquidator.keypair.pubkey(), true), // liquidator (signer)
+            AccountMeta::new(liquidator.user_collateral, false), // liquidator_collateral (mut)
+        ],
+        data,
+    };
+    submit(&mut env.ctx, vec![ix], &[liquidator.keypair.as_ref()]).await
+}
+
+/// `settle_funding()` — permissionless; market (mut), position (mut),
+/// user_collateral (mut), order_book (mut), index_source.
+async fn settle_funding(
+    env: &mut Env,
+    position: &Pubkey,
+    user_collateral: &Pubkey,
+) -> Result<(), BanksClientError> {
+    let data = fructus::instruction::SettleFunding.data();
+    let ix = Instruction {
+        program_id: fructus::ID,
+        accounts: vec![
+            AccountMeta::new(env.market, false),              // market (mut)
+            AccountMeta::new(*position, false),               // position (mut)
+            AccountMeta::new(*user_collateral, false),        // user_collateral (mut)
+            AccountMeta::new(env.order_book, false),          // order_book (mut)
+            AccountMeta::new_readonly(env.stake_pool, false), // index_source
+        ],
+        data,
+    };
+    submit(&mut env.ctx, vec![ix], &[]).await
+}
+
 // --- Bank-state readers ------------------------------------------------
 
 async fn position_state(env: &Env, key: &Pubkey) -> Option<Position> {
@@ -688,6 +784,101 @@ async fn vault_balance(env: &Env) -> u64 {
         .unwrap()
         .expect("vault exists");
     TokenAccount::unpack(&account.data).unwrap().amount
+}
+
+/// Raw account bytes (or `None` when the account does not exist) — used for
+/// the byte-identity assertions on accounts a scenario must NOT touch.
+async fn account_data(env: &Env, key: &Pubkey) -> Option<Vec<u8>> {
+    env.ctx
+        .banks_client
+        .get_account(*key)
+        .await
+        .unwrap()
+        .map(|account| account.data)
+}
+
+/// The on-chain `PerpMarket` state (used for `pnl_pool` assertions).
+async fn market_state(env: &Env) -> PerpMarket {
+    let account = env
+        .ctx
+        .banks_client
+        .get_account(env.market)
+        .await
+        .unwrap()
+        .expect("market exists");
+    let mut data: &[u8] = &account.data;
+    PerpMarket::try_deserialize(&mut data).expect("market deserializes")
+}
+
+/// The live fake stake-pool rate snapshot `(total_lamports,
+/// pool_token_supply)` — the same bytes `read_stake_pool` reads on-chain
+/// (offsets 258/266, with the `account_type` prefix).
+async fn stake_pool_rate(env: &Env) -> (u64, u64) {
+    let account = env
+        .ctx
+        .banks_client
+        .get_account(env.stake_pool)
+        .await
+        .unwrap()
+        .expect("stake pool exists");
+    (read_u64(&account.data, 258), read_u64(&account.data, 266))
+}
+
+/// `margin_required(notional, bps)` mirror (CEILING `(notional × bps + 9_999)
+/// / 10_000`) for an arbitrary ratio — the maintenance ratio as well as the
+/// market's initial one.
+fn margin_required_bps(notional: u64, bps: u16) -> u64 {
+    (notional as u128 * bps as u128).div_ceil(10_000) as u64
+}
+
+/// Account equity (`deposited + Σ upnl`, signed) — the account-level health
+/// numerator the handler gate must compute (REQ-A2-1).
+fn account_equity(deposited: u64, pnl_sum: i128) -> i128 {
+    (deposited as i128).saturating_add(pnl_sum)
+}
+
+/// The account-level margin requirement `Σ_side margin_required(n_side, bps)`
+/// (cross margin, NO netting — REQ-A2-1).
+fn account_margin_required(n_long: u64, n_short: u64, bps: u16) -> u64 {
+    margin_required_bps(n_long, bps) + margin_required_bps(n_short, bps)
+}
+
+/// The ACCOUNT-liquidatable predicate the `liquidate` gate applies
+/// (REQ-A2-1/D8): no exposure ⇒ false, else `equity < Σ m(n_i, bps)` strict.
+/// Computed from the pristine pure pieces (`positions::pnl` + the ceiling
+/// formula) — the stubbed `liquidation::account_liquidatable` is what the
+/// handler gate must implement, so the scenarios assert against THIS inline
+/// mirror instead.
+fn account_is_liquidatable(deposited: u64, pnl_sum: i128, n_long: u64, n_short: u64) -> bool {
+    n_long + n_short > 0
+        && account_equity(deposited, pnl_sum)
+            < account_margin_required(n_long, n_short, MAINTENANCE_MARGIN_BPS) as i128
+}
+
+/// Signed unrealized PnL of one position against `rate` (a live index
+/// snapshot) — the exact `positions::pnl` call the handlers make.
+fn pnl_of(position: &Position, rate: (u64, u64)) -> i128 {
+    let side = if position.side == LONG {
+        PositionSide::Long
+    } else {
+        PositionSide::Short
+    };
+    fructus::positions::pnl(
+        position.entry_n_sum,
+        position.entry_d_sum,
+        rate.0,
+        rate.1,
+        position.notional,
+        side,
+    )
+    .expect("pnl is total in the bank band")
+}
+
+/// The liquidator penalty on `released` collateral at
+/// `LIQUIDATION_PENALTY_BPS` — the exact CEILING formula
+/// `liquidation::liquidation_penalty` implements (R-L3).
+fn liquidation_penalty(released: u64) -> u64 {
+    (released as u128 * LIQUIDATION_PENALTY_BPS as u128).div_ceil(10_000) as u64
 }
 
 /// `margin_required(notional)` mirror of `positions::margin_required` for the
@@ -1906,6 +2097,784 @@ async fn index_source_must_be_market_binding() {
     assert_eq!(book.read_cursor, 3, "crank drained all three fills");
 }
 
+// --- A2: account-level liquidation + the withdraw equity gate -------------
+
+/// LIQUIDATE-TRIGGERS-ON-ACCOUNT-HEALTH (REQ-A2-2, bank): `liquidate`
+/// succeeds iff the ACCOUNT's equity is below its TOTAL maintenance
+/// requirement — the superseded per-position metric is not the trigger.
+///
+/// (a) both sides held: each side would PASS the per-position check, yet the
+///     account is under its total maintenance requirement ⇒ liquidation
+///     succeeds on one side;
+/// (b) one side looks individually weak but the account (a big deposit) is
+///     healthy ⇒ `NotLiquidatable`;
+/// (c) the opposite side is pristine (never created) ⇒ zero contribution and
+///     the account behaves as a single-side account.
+///
+/// Cases (b)/(c) run first: case (a) parks the book's mark furniture (a
+/// resting bid/ask used for the funding premium) that later market orders
+/// would otherwise pick up.
+#[tokio::test]
+async fn liquidate_triggers_on_account_health() {
+    let Some(mut env) = setup().await else {
+        return;
+    };
+    let a = env.a.clone();
+    let b = env.b.clone();
+    let c = env.c.clone();
+    let d = env.d.clone();
+    let n_long = 3_000_000u64; // long-side notional (USDC microunits)
+    let n_short = 1_000_000u64; // short-side notional
+
+    // ---- (b) one side individually weak, the account healthy (big deposit).
+    {
+        set_stake_pool_total_lamports(&mut env, 11_600_000_000_000).await; // entry 1.16
+        open_maker_position(&mut env, &a, &b, LONG, n_long, 150_000, 0)
+            .await
+            .expect("(b) A rests a long (entry 1.16)");
+        set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // drift 1.16 -> 1.00
+        open_maker_position(&mut env, &a, &c, SHORT, n_short, 250_000, 1)
+            .await
+            .expect("(b) A rests a short (entry 1.00)");
+        let open_slot = position_state(&env, &a.long).await.unwrap().open_slot;
+        env.ctx
+            .warp_to_slot(open_slot.wrapping_add(1_001))
+            .expect("(b) warp past the TWAP window");
+
+        let rate = stake_pool_rate(&env).await;
+        let long = position_state(&env, &a.long).await.expect("(b) A long");
+        let short = position_state(&env, &a.short).await.expect("(b) A short");
+        let pnl_long = pnl_of(&long, rate);
+        let pnl_short = pnl_of(&short, rate);
+        let pnl_sum = pnl_long + pnl_short;
+        let uc = user_collateral_state(&env, &a.user_collateral)
+            .await
+            .expect("(b) A ledger");
+        // The long alone would be liquidatable under the superseded
+        // per-position metric (`collateral + upnl < m(n, maintenance)`) …
+        assert!(
+            (long.collateral as i128) + pnl_long
+                < margin_required_bps(long.notional, MAINTENANCE_MARGIN_BPS) as i128,
+            "(b) premise: the long side must look individually liquidatable"
+        );
+        // … but the account's equity (a 1,000,000 USDC deposit) is far above
+        // the TOTAL maintenance requirement, so liquidation must be refused.
+        assert!(
+            !account_is_liquidatable(uc.deposited, pnl_sum, long.notional, short.notional),
+            "(b) premise: the account must stay above its total maintenance requirement"
+        );
+        let moved = liquidate(&mut env, &a, &d, LONG, n_short).await;
+        assert_anchor_error(moved, FructusError::NotLiquidatable);
+        assert_eq!(
+            user_collateral_state(&env, &a.user_collateral)
+                .await
+                .expect("(b) A ledger")
+                .deposited,
+            uc.deposited,
+            "(b) a refused liquidation must not move the ledger"
+        );
+        assert_eq!(
+            position_state(&env, &a.long).await.unwrap().notional,
+            n_long,
+            "(b) a refused liquidation must not touch the position"
+        );
+    }
+
+    // ---- (c) pristine other side: zero contribution (single-side account).
+    {
+        let u = fresh_user(&mut env).await;
+        deposit(&mut env, &u, 400_000)
+            .await
+            .expect("(c) u deposits its 10% margin");
+        set_stake_pool_total_lamports(&mut env, 11_600_000_000_000).await; // entry 1.16
+        open_maker_position(&mut env, &u, &b, LONG, n_long, 150_000, 2)
+            .await
+            .expect("(c) u rests a long (entry 1.16)");
+        set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // drift 1.16 -> 1.00
+        let open_slot = position_state(&env, &u.long).await.unwrap().open_slot;
+        env.ctx
+            .warp_to_slot(open_slot.wrapping_add(1_001))
+            .expect("(c) warp past the TWAP window");
+        // The short side was never created: its PDA is pristine and must
+        // contribute zero exposure.
+        assert!(
+            account_data(&env, &u.short).await.is_none(),
+            "(c) premise: the opposite side must be pristine"
+        );
+        let rate = stake_pool_rate(&env).await;
+        let long = position_state(&env, &u.long).await.expect("(c) u long");
+        let pnl = pnl_of(&long, rate);
+        let uc = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(c) u ledger");
+        assert!(
+            account_is_liquidatable(uc.deposited, pnl, long.notional, 0),
+            "(c) premise: the single-side account is under maintenance"
+        );
+        let d_before = user_collateral_state(&env, &d.user_collateral)
+            .await
+            .expect("(c) liquidator ledger")
+            .deposited;
+        liquidate(&mut env, &u, &d, LONG, n_short)
+            .await
+            .expect("(c) a single-side account liquidates on account health");
+        let released = margin_required(n_long) - margin_required(n_long - n_short);
+        let reward = liquidation_penalty(released);
+        let reserved_after = margin_required(n_long - n_short);
+        let booked = u64::try_from(pnl.unsigned_abs())
+            .expect("loss fits u64")
+            .min(uc.deposited - reserved_after - reward);
+        assert_eq!(
+            position_state(&env, &u.long).await.unwrap().notional,
+            n_long - n_short,
+            "(c) the long is reduced by the liquidated amount"
+        );
+        let uc_after = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(c) u ledger after");
+        assert_eq!(
+            uc_after.reserved, reserved_after,
+            "(c) reserved releases the freed margin"
+        );
+        assert_eq!(
+            uc_after.deposited,
+            uc.deposited - booked - reward,
+            "(c) the victim pays the booked loss and the reward"
+        );
+        assert_eq!(
+            user_collateral_state(&env, &d.user_collateral)
+                .await
+                .expect("(c) liquidator ledger after")
+                .deposited,
+            d_before + reward,
+            "(c) the liquidator is credited the penalty reward"
+        );
+    }
+
+    // ---- (a) each side individually healthy, the ACCOUNT under total
+    // maintenance (both notionals large, a small deposit + a funding debit).
+    {
+        let u = fresh_user(&mut env).await;
+        deposit(&mut env, &u, 400_000)
+            .await
+            .expect("(a) u deposits its 10% margin");
+        set_stake_pool_total_lamports(&mut env, 10_800_000_000_000).await; // long entry 1.08
+        open_maker_position(&mut env, &u, &b, LONG, n_long, 150_000, 3)
+            .await
+            .expect("(a) u rests a long (entry 1.08)");
+        set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // short entry 1.00
+        open_maker_position(&mut env, &u, &c, SHORT, n_short, 250_000, 4)
+            .await
+            .expect("(a) u rests a short (entry 1.00)");
+        // The book's mid (1.10) is the mark for the funding premium.
+        open_position(&mut env, &c, LONG, n_short, 1_000_000, None)
+            .await
+            .expect("(a) mark bid rests");
+        open_position(&mut env, &d, SHORT, n_short, 1_200_000, None)
+            .await
+            .expect("(a) mark ask rests");
+        // Settle three funding epochs on the long: the first market
+        // settlement has no baseline, so `index == 0` and the premium is the
+        // full mark — the rate clamps to its +1%/epoch cap and the long pays
+        // exactly 1% x 3M per epoch.
+        let last_epoch = position_state(&env, &u.long)
+            .await
+            .expect("(a) u long")
+            .last_funding_epoch;
+        env.ctx
+            .warp_to_slot((last_epoch + 3) * 1_000 + 500)
+            .expect("(a) warp three funding epochs");
+        let before_funding = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(a) u ledger pre-funding");
+        settle_funding(&mut env, &u.long, &u.user_collateral)
+            .await
+            .expect("(a) settle funding on the long");
+        let after_funding = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(a) u ledger post-funding");
+        assert_eq!(
+            before_funding.deposited - after_funding.deposited,
+            90_000,
+            "(a) premise: three epochs of max-rate funding debit 90_000 off the long"
+        );
+        set_stake_pool_total_lamports(&mut env, 10_400_000_000_000).await; // final drift 1.04
+
+        let rate = stake_pool_rate(&env).await;
+        let long = position_state(&env, &u.long).await.expect("(a) u long");
+        let short = position_state(&env, &u.short).await.expect("(a) u short");
+        let pnl_long = pnl_of(&long, rate);
+        let pnl_short = pnl_of(&short, rate);
+        let pnl_sum = pnl_long + pnl_short;
+        let uc = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(a) u ledger");
+        // EACH side is individually healthy under the superseded metric …
+        assert!(
+            (long.collateral as i128) + pnl_long
+                >= margin_required_bps(long.notional, MAINTENANCE_MARGIN_BPS) as i128,
+            "(a) premise: the long side must look individually healthy"
+        );
+        assert!(
+            (short.collateral as i128) + pnl_short
+                >= margin_required_bps(short.notional, MAINTENANCE_MARGIN_BPS) as i128,
+            "(a) premise: the short side must look individually healthy"
+        );
+        // … yet the ACCOUNT is below its TOTAL maintenance requirement.
+        assert!(
+            account_is_liquidatable(uc.deposited, pnl_sum, long.notional, short.notional),
+            "(a) premise: the account must be under total maintenance"
+        );
+        let d_before = user_collateral_state(&env, &d.user_collateral)
+            .await
+            .expect("(a) liquidator ledger")
+            .deposited;
+        liquidate(&mut env, &u, &d, LONG, n_short)
+            .await
+            .expect("(a) an individually-healthy side liquidates on account health");
+        let released = margin_required(n_long) - margin_required(n_long - n_short);
+        let reward = liquidation_penalty(released);
+        let reserved_after = margin_required(n_long - n_short) + margin_required(n_short);
+        let seam = uc.deposited - reserved_after - reward;
+        let booked = u64::try_from(pnl_sum.unsigned_abs())
+            .expect("loss fits u64")
+            .min(seam);
+        assert_eq!(
+            position_state(&env, &u.long).await.unwrap().notional,
+            n_long - n_short,
+            "(a) the targeted long is reduced"
+        );
+        assert_eq!(
+            position_state(&env, &u.short).await.unwrap().notional,
+            n_short,
+            "(a) the other side is untouched"
+        );
+        let uc_after = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("(a) u ledger after");
+        assert_eq!(
+            uc_after.reserved, reserved_after,
+            "(a) reserved == Σ m(n_i, im) after the release"
+        );
+        assert_eq!(
+            uc_after.deposited,
+            uc.deposited - booked - reward,
+            "(a) the victim pays the booked loss and the reward"
+        );
+        assert_eq!(
+            user_collateral_state(&env, &d.user_collateral)
+                .await
+                .expect("(a) liquidator ledger after")
+                .deposited,
+            d_before + reward,
+            "(a) the liquidator is credited the penalty reward"
+        );
+    }
+}
+
+/// LIQUIDATE-RELEASES-ONLY-THE-TARGETED-SIDE (REQ-A2-2, bank): a partial
+/// liquidation of the long (and a full one of the short, on a second account)
+/// reduces only the targeted side's notional/collateral — the other side's
+/// `Position` account stays byte-identical — while `reserved` drops by exactly
+/// the released initial-margin backing, the liquidator is credited the 5%
+/// penalty on the release, and the account loss `max(0, −Σ upnl)` is booked
+/// into the pool with the `deposited − reserved_after − reward` clamp.
+#[tokio::test]
+async fn liquidate_releases_only_the_targeted_side() {
+    let Some(mut env) = setup().await else {
+        return;
+    };
+    let b = env.b.clone();
+    let c = env.c.clone();
+    let d = env.d.clone();
+    let n_long = 3_000_000u64;
+    let n_short = 1_000_000u64;
+
+    // ---- partial liquidation of the long on a two-side account.
+    let u1 = fresh_user(&mut env).await;
+    deposit(&mut env, &u1, 400_000)
+        .await
+        .expect("u1 deposits the exact margin");
+    set_stake_pool_total_lamports(&mut env, 11_600_000_000_000).await; // long entry 1.16
+    open_maker_position(&mut env, &u1, &b, LONG, n_long, 150_000, 0)
+        .await
+        .expect("u1 rests a long (entry 1.16)");
+    set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // drift 1.16 -> 1.00
+    open_maker_position(&mut env, &u1, &c, SHORT, n_short, 250_000, 1)
+        .await
+        .expect("u1 rests a short (entry 1.00)");
+    let open_slot = position_state(&env, &u1.long).await.unwrap().open_slot;
+    env.ctx
+        .warp_to_slot(open_slot.wrapping_add(1_001))
+        .expect("u1 warp past the TWAP window");
+
+    let rate = stake_pool_rate(&env).await;
+    let long = position_state(&env, &u1.long).await.expect("u1 long");
+    let short = position_state(&env, &u1.short).await.expect("u1 short");
+    let pnl_sum = pnl_of(&long, rate) + pnl_of(&short, rate);
+    let uc = user_collateral_state(&env, &u1.user_collateral)
+        .await
+        .expect("u1 ledger");
+    assert!(
+        account_is_liquidatable(uc.deposited, pnl_sum, long.notional, short.notional),
+        "u1 premise: the account is under its total maintenance requirement"
+    );
+    let short_bytes = account_data(&env, &u1.short).await.expect("u1 short bytes");
+    let d_before = user_collateral_state(&env, &d.user_collateral)
+        .await
+        .expect("liquidator ledger")
+        .deposited;
+    let pool_before = market_state(&env).await.pnl_pool;
+    let vault_before = vault_balance(&env).await;
+
+    liquidate(&mut env, &u1, &d, LONG, n_short)
+        .await
+        .expect("u1: a partial liquidation of the long succeeds");
+
+    assert_eq!(
+        account_data(&env, &u1.short).await,
+        Some(short_bytes),
+        "the untargeted short side must be byte-identical"
+    );
+    let long_after = position_state(&env, &u1.long).await.expect("u1 long after");
+    assert_eq!(
+        long_after.notional,
+        n_long - n_short,
+        "the targeted notional is reduced by amount"
+    );
+    assert_eq!(
+        long_after.collateral,
+        margin_required(n_long - n_short),
+        "the survivor holds exactly m(n - amount, im)"
+    );
+    let released = margin_required(n_long) - margin_required(n_long - n_short);
+    let reward = liquidation_penalty(released);
+    let reserved_after = margin_required(n_long - n_short) + margin_required(n_short);
+    let booked = u64::try_from(pnl_sum.unsigned_abs())
+        .expect("loss fits u64")
+        .min(uc.deposited - reserved_after - reward);
+    let uc_after = user_collateral_state(&env, &u1.user_collateral)
+        .await
+        .expect("u1 ledger after");
+    assert_eq!(
+        uc_after.reserved, reserved_after,
+        "reserved == Σ m(n_i, im) after the release"
+    );
+    assert_eq!(
+        uc_after.deposited,
+        uc.deposited - booked - reward,
+        "the victim pays the booked loss and the reward"
+    );
+    assert_eq!(
+        user_collateral_state(&env, &d.user_collateral)
+            .await
+            .expect("liquidator ledger after")
+            .deposited,
+        d_before + reward,
+        "the liquidator is credited the penalty on the released margin"
+    );
+    assert_eq!(
+        market_state(&env).await.pnl_pool,
+        pool_before + booked,
+        "the account loss max(0, -Σ upnl) is booked into the pool, seam-clamped"
+    );
+    assert_eq!(
+        vault_balance(&env).await,
+        vault_before,
+        "a liquidation moves no vault tokens"
+    );
+
+    // ---- full liquidation of the short on a second two-side account.
+    let u2 = fresh_user(&mut env).await;
+    deposit(&mut env, &u2, 400_000)
+        .await
+        .expect("u2 deposits the exact margin");
+    set_stake_pool_total_lamports(&mut env, 13_000_000_000_000).await; // small long enters at 1.30
+    open_maker_position(&mut env, &u2, &b, LONG, n_short, 150_000, 2)
+        .await
+        .expect("u2 rests a small long (entry 1.30)");
+    set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // big short enters at 1.00
+    open_maker_position(&mut env, &u2, &c, SHORT, n_long, 250_000, 3)
+        .await
+        .expect("u2 rests a big short (entry 1.00)");
+    let open_slot = position_state(&env, &u2.long).await.unwrap().open_slot;
+    env.ctx
+        .warp_to_slot(open_slot.wrapping_add(1_001))
+        .expect("u2 warp past the TWAP window");
+
+    let rate = stake_pool_rate(&env).await;
+    let long = position_state(&env, &u2.long).await.expect("u2 long");
+    let short = position_state(&env, &u2.short).await.expect("u2 short");
+    let pnl_sum = pnl_of(&long, rate) + pnl_of(&short, rate);
+    let uc = user_collateral_state(&env, &u2.user_collateral)
+        .await
+        .expect("u2 ledger");
+    assert!(
+        account_is_liquidatable(uc.deposited, pnl_sum, long.notional, short.notional),
+        "u2 premise: the account is under its total maintenance requirement"
+    );
+    let long_bytes = account_data(&env, &u2.long).await.expect("u2 long bytes");
+    let d_before = user_collateral_state(&env, &d.user_collateral)
+        .await
+        .expect("liquidator ledger")
+        .deposited;
+    let pool_before = market_state(&env).await.pnl_pool;
+    let vault_before = vault_balance(&env).await;
+
+    liquidate(&mut env, &u2, &d, SHORT, n_long)
+        .await
+        .expect("u2: a full liquidation of the short succeeds");
+
+    assert_eq!(
+        account_data(&env, &u2.long).await,
+        Some(long_bytes),
+        "the untargeted long side must be byte-identical"
+    );
+    let short_after = position_state(&env, &u2.short)
+        .await
+        .expect("u2 short after");
+    assert_eq!(
+        short_after.notional, 0,
+        "a full liquidation closes the targeted side"
+    );
+    assert_eq!(
+        short_after.collateral, 0,
+        "a fully liquidated side holds zero collateral"
+    );
+    let released = margin_required(n_long);
+    let reward = liquidation_penalty(released);
+    let reserved_after = margin_required(n_short);
+    let booked = u64::try_from(pnl_sum.unsigned_abs())
+        .expect("loss fits u64")
+        .min(uc.deposited - reserved_after - reward);
+    let uc_after = user_collateral_state(&env, &u2.user_collateral)
+        .await
+        .expect("u2 ledger after");
+    assert_eq!(
+        uc_after.reserved, reserved_after,
+        "only the short's initial-margin backing is released"
+    );
+    assert_eq!(
+        uc_after.deposited,
+        uc.deposited - booked - reward,
+        "the victim pays the booked loss and the reward"
+    );
+    assert_eq!(
+        user_collateral_state(&env, &d.user_collateral)
+            .await
+            .expect("liquidator ledger after")
+            .deposited,
+        d_before + reward,
+        "the liquidator is credited the penalty on the released margin"
+    );
+    assert_eq!(
+        market_state(&env).await.pnl_pool,
+        pool_before + booked,
+        "the account loss is booked into the pool"
+    );
+    assert_eq!(
+        vault_balance(&env).await,
+        vault_before,
+        "a liquidation moves no vault tokens"
+    );
+}
+
+/// WITHDRAW-BLOCKED-BELOW-INITIAL-MARGIN (REQ-A2-3, bank): after a downward
+/// drift leaves the account with negative Σ upnl, a withdrawal that would
+/// leave equity (`deposited + Σ upnl`) below the reserved initial-margin
+/// requirement fails with `InsufficientFreeCollateral` and moves nothing,
+/// while one that keeps equity ≥ it succeeds — the exact boundary is pinned
+/// (±1 microunit). Covers a single-side account (pristine-position path) and
+/// a two-side account (both sides' upnl enter the gate).
+#[tokio::test]
+async fn withdraw_blocked_below_initial_margin() {
+    let Some(mut env) = setup().await else {
+        return;
+    };
+    let b = env.b.clone();
+    let c = env.c.clone();
+    let n_long = 3_000_000u64;
+    let n_short = 1_000_000u64;
+
+    // Opens: u1 long @1.08, u2 long @1.08, u2 short @1.00.
+    let u1 = fresh_user(&mut env).await;
+    deposit(&mut env, &u1, 500_000).await.expect("u1 deposits");
+    let u2 = fresh_user(&mut env).await;
+    deposit(&mut env, &u2, 560_000).await.expect("u2 deposits");
+    set_stake_pool_total_lamports(&mut env, 10_800_000_000_000).await;
+    open_maker_position(&mut env, &u1, &b, LONG, n_long, 150_000, 0)
+        .await
+        .expect("u1 rests a long (entry 1.08)");
+    open_maker_position(&mut env, &u2, &b, LONG, n_long, 150_000, 1)
+        .await
+        .expect("u2 rests a long (entry 1.08)");
+    set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // short entry 1.00
+    open_maker_position(&mut env, &u2, &c, SHORT, n_short, 250_000, 2)
+        .await
+        .expect("u2 rests a short (entry 1.00)");
+    set_stake_pool_total_lamports(&mut env, 10_400_000_000_000).await; // drift 1.08 -> 1.04
+
+    // ---- single-side account: pristine short contributes zero upnl.
+    assert!(
+        account_data(&env, &u1.short).await.is_none(),
+        "u1 premise: the short side is pristine (must contribute zero upnl)"
+    );
+    let rate = stake_pool_rate(&env).await;
+    let long1 = position_state(&env, &u1.long).await.expect("u1 long");
+    let pnl1 = pnl_of(&long1, rate);
+    assert!(
+        pnl1 < 0,
+        "u1 premise: the drift leaves the long with negative PnL"
+    );
+    let uc1 = user_collateral_state(&env, &u1.user_collateral)
+        .await
+        .expect("u1 ledger");
+    let reserved1 = margin_required(long1.notional);
+    assert_eq!(uc1.reserved, reserved1, "u1 premise: reserved == m(n, im)");
+    // The largest withdrawal that keeps `equity - amount >= reserved`.
+    let limit1 = u64::try_from(account_equity(uc1.deposited, pnl1) - reserved1 as i128)
+        .expect("u1 limit fits u64");
+    assert!(
+        limit1 < uc1.deposited - uc1.reserved,
+        "u1 premise: the free seam must NOT be what blocks (equity gate must bite)"
+    );
+
+    let ata_before = ata_balance(&env, &u1.ata).await;
+    let vault_before = vault_balance(&env).await;
+    let moved = withdraw(&mut env, &u1, limit1 + 1).await;
+    assert_anchor_error(moved, FructusError::InsufficientFreeCollateral);
+    assert_eq!(
+        ata_balance(&env, &u1.ata).await,
+        ata_before,
+        "a refused withdrawal moves no tokens"
+    );
+    assert_eq!(
+        vault_balance(&env).await,
+        vault_before,
+        "a refused withdrawal moves no tokens"
+    );
+    assert_eq!(
+        user_collateral_state(&env, &u1.user_collateral)
+            .await
+            .expect("u1 ledger")
+            .deposited,
+        uc1.deposited,
+        "a refused withdrawal leaves the ledger untouched"
+    );
+
+    withdraw(&mut env, &u1, limit1)
+        .await
+        .expect("u1: a withdrawal that keeps equity >= reserved succeeds");
+    assert_eq!(
+        ata_balance(&env, &u1.ata).await,
+        ata_before + limit1,
+        "tokens moved to the user ATA"
+    );
+    assert_eq!(
+        vault_balance(&env).await,
+        vault_before - limit1,
+        "tokens left the vault"
+    );
+    let uc1_after = user_collateral_state(&env, &u1.user_collateral)
+        .await
+        .expect("u1 ledger after");
+    assert_eq!(
+        uc1_after.deposited,
+        uc1.deposited - limit1,
+        "the ledger is debited by the amount"
+    );
+    assert_eq!(
+        account_equity(uc1_after.deposited, pnl1),
+        reserved1 as i128,
+        "the boundary withdrawal lands exactly on the initial requirement"
+    );
+
+    // ---- two-side account: both sides carry losses, both enter the gate.
+    let long2 = position_state(&env, &u2.long).await.expect("u2 long");
+    let short2 = position_state(&env, &u2.short).await.expect("u2 short");
+    let pnl_long2 = pnl_of(&long2, rate);
+    let pnl_short2 = pnl_of(&short2, rate);
+    assert!(
+        pnl_long2 < 0 && pnl_short2 < 0,
+        "u2 premise: both sides carry negative PnL (no netting in the gate)"
+    );
+    let uc2 = user_collateral_state(&env, &u2.user_collateral)
+        .await
+        .expect("u2 ledger");
+    let reserved2 = margin_required(long2.notional) + margin_required(short2.notional);
+    assert_eq!(
+        uc2.reserved, reserved2,
+        "u2 premise: reserved == Σ m(n_i, im)"
+    );
+    let limit2 =
+        u64::try_from(account_equity(uc2.deposited, pnl_long2 + pnl_short2) - reserved2 as i128)
+            .expect("u2 limit fits u64");
+    assert!(
+        limit2 < uc2.deposited - uc2.reserved,
+        "u2 premise: the equity gate, not the free seam, must block"
+    );
+
+    let moved2 = withdraw(&mut env, &u2, limit2 + 1).await;
+    assert_anchor_error(moved2, FructusError::InsufficientFreeCollateral);
+    assert_eq!(
+        user_collateral_state(&env, &u2.user_collateral)
+            .await
+            .expect("u2 ledger")
+            .deposited,
+        uc2.deposited,
+        "u2: a refused withdrawal leaves the ledger untouched"
+    );
+
+    withdraw(&mut env, &u2, limit2)
+        .await
+        .expect("u2: the boundary withdrawal succeeds");
+    let uc2_after = user_collateral_state(&env, &u2.user_collateral)
+        .await
+        .expect("u2 ledger after");
+    assert_eq!(
+        uc2_after.deposited,
+        uc2.deposited - limit2,
+        "u2: the ledger is debited by the amount"
+    );
+    assert_eq!(
+        account_equity(uc2_after.deposited, pnl_long2 + pnl_short2),
+        reserved2 as i128,
+        "u2: post-withdraw equity lands exactly on Σ m(n_i, im)"
+    );
+}
+
+/// DEPOSIT-IMPROVES-ACCOUNT-HEALTH (REQ-A2-4, bank): after a downward drift
+/// leaves an under-margin account, a direct `deposit_collateral` raises equity
+/// one-for-one; depositing exactly the gap flips the account-level predicate
+/// to false while one microunit less stays liquidatable — the ±1 boundary is
+/// checked against the same equity-vs-requirement math the handler gate uses,
+/// and via the handler itself (a still-under account liquidates; the healed
+/// ones are refused with `NotLiquidatable`).
+#[tokio::test]
+async fn deposit_improves_account_health() {
+    let Some(mut env) = setup().await else {
+        return;
+    };
+    let b = env.b.clone();
+    let d = env.d.clone();
+    let n_long = 3_000_000u64;
+
+    // Three identical accounts: long 3M entered at 1.08, drifted to 1.00.
+    let mut accounts = Vec::new();
+    for seq in 0..3u64 {
+        let u = fresh_user(&mut env).await;
+        deposit(&mut env, &u, 310_000).await.expect("deposit");
+        set_stake_pool_total_lamports(&mut env, 10_800_000_000_000).await; // entry 1.08
+        open_maker_position(&mut env, &u, &b, LONG, n_long, 150_000, seq)
+            .await
+            .expect("rests a long (entry 1.08)");
+        accounts.push(u);
+    }
+    set_stake_pool_total_lamports(&mut env, 10_000_000_000_000).await; // drift 1.08 -> 1.00
+    let open_slot = position_state(&env, &accounts[0].long)
+        .await
+        .unwrap()
+        .open_slot;
+    env.ctx
+        .warp_to_slot(open_slot.wrapping_add(1_001))
+        .expect("warp past the TWAP window");
+
+    // Per-account flip point: the deposit amount that lands equity exactly on
+    // the maintenance requirement, computed with the handler gate's math.
+    let rate = stake_pool_rate(&env).await;
+    let mut state = Vec::new(); // (pnl, deposited_before, gap)
+    for u in &accounts {
+        let long = position_state(&env, &u.long).await.expect("long");
+        let pnl = pnl_of(&long, rate);
+        let uc = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("ledger");
+        assert!(
+            account_is_liquidatable(uc.deposited, pnl, long.notional, 0),
+            "premise: the drift must leave the account liquidatable"
+        );
+        let required = account_margin_required(long.notional, 0, MAINTENANCE_MARGIN_BPS) as i128;
+        let gap = u64::try_from(required - account_equity(uc.deposited, pnl))
+            .expect("flip point fits u64");
+        assert!(gap > 1, "premise: the gap must admit a ±1 boundary");
+        state.push((pnl, uc.deposited, gap));
+    }
+    // Deposits: gap - 1 (still under), gap (exactly at), gap + 1 (above).
+    let deposits = [state[0].2 - 1, state[1].2, state[2].2 + 1];
+    for (i, u) in accounts.iter().enumerate() {
+        let (pnl, before, _) = state[i];
+        deposit(&mut env, u, deposits[i])
+            .await
+            .expect("boundary deposit");
+        let uc = user_collateral_state(&env, &u.user_collateral)
+            .await
+            .expect("ledger after deposit");
+        assert_eq!(
+            uc.deposited,
+            before + deposits[i],
+            "a deposit raises deposited one-for-one"
+        );
+        assert_eq!(
+            account_equity(uc.deposited, pnl),
+            account_equity(before, pnl) + deposits[i] as i128,
+            "a deposit raises equity one-for-one"
+        );
+        let still_under = account_is_liquidatable(uc.deposited, pnl, n_long, 0);
+        match i {
+            0 => assert!(
+                still_under,
+                "gap - 1 must stay below the maintenance requirement"
+            ),
+            _ => assert!(
+                !still_under,
+                "gap and gap + 1 must clear the maintenance requirement"
+            ),
+        }
+    }
+
+    // Handler-level evidence: the still-under account liquidates; the healed
+    // ones are refused with NotLiquidatable.
+    let (pnl0, before0, _) = state[0];
+    let deposited0 = before0 + deposits[0];
+    let released0 = margin_required(n_long) - margin_required(2_000_000);
+    let reward0 = liquidation_penalty(released0);
+    let reserved_after0 = margin_required(2_000_000);
+    let booked0 = u64::try_from(pnl0.unsigned_abs())
+        .expect("loss fits u64")
+        .min(deposited0 - reserved_after0 - reward0);
+    let d_before = user_collateral_state(&env, &d.user_collateral)
+        .await
+        .expect("liquidator ledger")
+        .deposited;
+    liquidate(&mut env, &accounts[0], &d, LONG, 1_000_000)
+        .await
+        .expect("a still-under account liquidates");
+    let uc0 = user_collateral_state(&env, &accounts[0].user_collateral)
+        .await
+        .expect("ledger after liquidate");
+    assert_eq!(
+        uc0.deposited,
+        deposited0 - booked0 - reward0,
+        "the liquidation books the clamped loss and the reward"
+    );
+    assert_eq!(
+        uc0.reserved, reserved_after0,
+        "reserved == m(n - amount, im)"
+    );
+    assert_eq!(
+        user_collateral_state(&env, &d.user_collateral)
+            .await
+            .expect("liquidator ledger after")
+            .deposited,
+        d_before + reward0,
+        "the liquidator is credited the reward"
+    );
+    for u in &accounts[1..] {
+        let moved = liquidate(&mut env, u, &d, LONG, 1_000_000).await;
+        assert_anchor_error(moved, FructusError::NotLiquidatable);
+    }
+}
+
 /// Every positions CPI test body is `let Some(mut env) = setup(..) else { return; }`,
 /// so `cargo test --workspace` reports green while silently skipping all
 /// position assertions whenever the SBF binary is missing (or runs a stale
@@ -2080,14 +3049,18 @@ proptest! {
     }
 
     // ==========================================================================
-    // Full-lifecycle property test: funding settlement (R-F3) + liquidation.
-    // Reuses the fill to produce one LONG (A) and one SHORT (B), then
-    //   (a) advances a funding epoch and asserts the sign convention when a
+    // Full-lifecycle property test: funding settlement (R-F3) + ACCOUNT-level
+    // liquidation (REQ-A2-2). Reuses the fill to produce one LONG (A) and one
+    // SHORT (B), then
+    //   (a) shrinks A's ledger to its reserved margin (so the drawdown can
+    //       push the ACCOUNT under its total maintenance requirement) and
+    //       advances a funding epoch, asserting the sign convention when a
     //       non-flat premium makes funding actually flow;
     //   (b) drives A's long underwater (the trustless index drops below the
-    //       entry snapshot) and liquidates it, asserting the liquidation is
-    //       permissionless, credits the liquidator, and never makes any ledger
-    //       negative (R-L/R-S3 conservation).
+    //       entry snapshot) and liquidates it, asserting the account-level
+    //       transition: permissionless, the liquidator credited exactly the
+    //       penalty reward, the clamped account loss booked into the pool, and
+    //       Σ(victim + liquidator + pool) conserved.
     #[test]
     fn pbt_funding_and_liquidation(
         entry_total in 9_000_000_000_000u64..=11_000_000_000_000u64,
@@ -2117,6 +3090,30 @@ proptest! {
             let apos = position_state(&env, &a.long).await.expect("A long");
             let open_slot = apos.open_slot;
 
+            // Shrink A's ledger to its reserved (initial-margin) requirement:
+            // at the fill-time rate the unrealized PnL is zero, so the equity
+            // gate permits withdrawing exactly the free seam — and only then
+            // can the coming drawdown push the ACCOUNT below its total
+            // maintenance requirement (REQ-A2-2). A per-position check could
+            // never see this (A's single side is backed at the initial ratio).
+            let uc_a_pre_withdraw = user_collateral_state(&env, &a.user_collateral)
+                .await
+                .expect("A ledger pre-withdraw");
+            withdraw(
+                &mut env,
+                &a,
+                uc_a_pre_withdraw.deposited - uc_a_pre_withdraw.reserved,
+            )
+            .await
+            .expect("A withdraws down to the reserved margin");
+            let uc_a_reserved_only = user_collateral_state(&env, &a.user_collateral)
+                .await
+                .expect("A ledger post-withdraw");
+            assert_eq!(
+                uc_a_reserved_only.deposited, uc_a_reserved_only.reserved,
+                "A's ledger holds exactly the reserved (initial-margin) backing"
+            );
+
             // ---- (a) funding: advance an epoch, then settle both positions.
             // A non-flat premium needs a real book mid (both sides present) that
             // differs from the index. Rest C on the bid and D on the ask so the
@@ -2143,22 +3140,10 @@ proptest! {
                 .expect("B ledger pre-funding")
                 .deposited;
 
-            let sf_data = fructus::instruction::SettleFunding.data();
-            let sf_ix = |pos: &Pubkey, uc: &Pubkey| Instruction {
-                program_id: fructus::ID,
-                accounts: vec![
-                    AccountMeta::new(env.market, false), // market (mut)
-                    AccountMeta::new(*pos, false), // position (mut)
-                    AccountMeta::new(*uc, false), // user_collateral (mut)
-                    AccountMeta::new(env.order_book, false), // order_book (mut)
-                    AccountMeta::new_readonly(env.stake_pool, false), // index_source
-                ],
-                data: sf_data.clone(),
-            };
-            submit(&mut env.ctx, vec![sf_ix(&a.long, &a.user_collateral)], &[])
+            settle_funding(&mut env, &a.long, &a.user_collateral)
                 .await
                 .expect("settle_funding long");
-            submit(&mut env.ctx, vec![sf_ix(&b.short, &b.user_collateral)], &[])
+            settle_funding(&mut env, &b.short, &b.user_collateral)
                 .await
                 .expect("settle_funding short");
 
@@ -2183,30 +3168,50 @@ proptest! {
             // ---- (b) liquidation: drop the index, making A's long underwater.
             let drop = entry_total * (100 - drawdown_pct) / 100;
             set_stake_pool_total_lamports(&mut env, drop).await;
+
+            // The ACCOUNT-level trigger (REQ-A2-2/D8): A holds one side (the
+            // short PDA is pristine ⇒ zero contribution), and the drawdown's
+            // unrealized loss now pushes `equity = deposited + pnl` below
+            // `m(size, maintenance)` because (a) shrank A's ledger to its
+            // reserved backing. Compute the gate INLINE, from the exact
+            // `positions::pnl` + ceiling formula the handler uses.
+            let rate_now = stake_pool_rate(&env).await;
+            let apos_now = position_state(&env, &a.long).await.expect("A long");
+            let pnl_sum = pnl_of(&apos_now, rate_now);
+            let uc_a_before = user_collateral_state(&env, &a.user_collateral)
+                .await
+                .expect("A ledger before liquidate");
+            assert!(
+                account_is_liquidatable(uc_a_before.deposited, pnl_sum, apos_now.notional, 0),
+                "the drawdown must leave A's account below maintenance"
+            );
             let uc_c_before = user_collateral_state(&env, &c.user_collateral)
                 .await
                 .expect("liquidator ledger before")
                 .deposited;
+            let pool_before = market_state(&env).await.pnl_pool;
             let vb_before = vault_balance(&env).await;
 
-            let liq = fructus::instruction::Liquidate { amount: size }.data();
-            let liq_ix = Instruction {
-                program_id: fructus::ID,
-                accounts: vec![
-                    AccountMeta::new(env.market, false), // market (mut)
-                    AccountMeta::new(a.long, false), // position (mut)
-                    AccountMeta::new(a.user_collateral, false), // user_collateral (mut)
-                    AccountMeta::new(env.order_book, false), // order_book (mut)
-                    AccountMeta::new_readonly(env.stake_pool, false), // index_source
-                    AccountMeta::new_readonly(c.keypair.pubkey(), true), // liquidator (signer)
-                    AccountMeta::new(c.user_collateral, false), // liquidator_collateral (mut)
-                ],
-                data: liq,
-            };
-            submit(&mut env.ctx, vec![liq_ix], &[c.keypair.as_ref()])
+            liquidate(&mut env, &a, &c, LONG, size)
                 .await
                 .expect("liquidate an underwater long");
 
+            // The account-level transition (D8): the FULL liquidation of the
+            // long releases its whole `m(size, im)` backing, credits the
+            // liquidator `penalty(released)`, and books the clamped account
+            // loss `min(max(0, -Σ upnl), deposited - reserved_after - reward)`
+            // into the pool (reserved_after == 0 for a single side).
+            let released = margin_required(size);
+            let reward = liquidation_penalty(released);
+            let seam = uc_a_before.deposited - reward;
+            let loss = u64::try_from(pnl_sum.unsigned_abs()).expect("loss fits u64");
+            let booked = loss.min(seam);
+            let a_after = position_state(&env, &a.long).await.expect("A long after");
+            assert_eq!(a_after.notional, 0, "the long is fully liquidated");
+            assert_eq!(
+                a_after.collateral, 0,
+                "a fully liquidated side holds zero collateral"
+            );
             let uc_a_after = user_collateral_state(&env, &a.user_collateral)
                 .await
                 .expect("A ledger post-liq");
@@ -2215,13 +3220,38 @@ proptest! {
                 .expect("liquidator ledger post-liq");
             let vb_after = vault_balance(&env).await;
 
-            // R-L/R-S3: the liquidator is credited a penalty reward, and no
-            // ledger ever goes negative; the vault token total is untouched by a
-            // ledger-level liquidation transfer.
-            assert!(uc_c_after.deposited >= uc_c_before, "liquidator was not credited");
+            // R-L/R-S3: the liquidator is credited exactly the penalty reward,
+            // the victim pays the booked loss (collected into the pool) and the
+            // reward, no ledger goes negative, and Σ(victim + liquidator +
+            // pool) is conserved — a liquidation transfers value, never mints.
+            assert_eq!(
+                uc_c_after.deposited,
+                uc_c_before + reward,
+                "liquidator was not credited the penalty reward"
+            );
+            assert_eq!(
+                uc_a_after.deposited,
+                uc_a_before.deposited - booked - reward,
+                "the victim pays the booked loss and the reward"
+            );
+            assert_eq!(uc_a_after.reserved, 0, "the single side released all backing");
             assert!(
                 uc_a_after.reserved <= uc_a_after.deposited,
                 "liquidated reserved > deposited"
+            );
+            assert_eq!(
+                market_state(&env).await.pnl_pool,
+                pool_before + booked,
+                "the account loss is booked into the pool"
+            );
+            assert_eq!(
+                (uc_a_after.deposited as u128)
+                    + (uc_c_after.deposited as u128)
+                    + (market_state(&env).await.pnl_pool as u128),
+                (uc_a_before.deposited as u128)
+                    + (uc_c_before as u128)
+                    + (pool_before as u128),
+                "a liquidation conserves Σ(victim + liquidator + pool)"
             );
             assert_eq!(vb_after, vb_before, "liquidation must not move vault tokens");
         });

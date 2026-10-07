@@ -123,3 +123,72 @@ export function applyPnl(deposited: bigint, pnlValue: bigint): bigint {
   const debit = -pnlValue;
   return debit >= deposited ? 0n : deposited - debit;
 }
+
+// ---------------------------------------------------------------------------
+// Account-level cross-margin mirrors (REQ-A2-1/REQ-A2-5, `liquidation.rs`)
+// ---------------------------------------------------------------------------
+//
+// Mirrors the account-level formulas the on-chain program applies to a
+// (market, user) account across BOTH sides (D6 hedge-mode, no netting): the
+// per-side `marginRequired` ceiling above is the building block, these are
+// the account-level aggregates.
+
+/**
+ * Account equity (REQ-A2-1/D6): `deposited + pnlSum` as a **signed** value,
+ * where `pnlSum` is the signed Σ unrealized PnL over both sides
+ * (`positions::pnl` per side; pristine sides contribute `0`).
+ *
+ * `bigint` makes the mirror total and exact — unlike the Rust `i128` (which
+ * saturates at its extremes for hostile inputs), the exact sum is always
+ * representable here.
+ *
+ * STUB: returns `0n` — the exact signed sum lands with the cross-margin
+ * implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST sweep pins the
+ * contract.
+ */
+export function accountEquity(deposited: bigint, pnlSum: bigint): bigint {
+  // STUB: `deposited + pnlSum` arrives with the cross-margin implementation.
+  return 0n;
+}
+
+/**
+ * Account-level cross-margin requirement (REQ-A2-1/D6, NO netting): the sum of
+ * both sides' ceilings, `marginRequired(nLong, bps) + marginRequired(nShort,
+ * bps)`. `bps` carries the **initial** ratio for the withdraw gate and the
+ * **maintenance** ratio for the liquidation trigger.
+ *
+ * `bigint` makes the mirror total: unlike the Rust `Option<u64>` (which is
+ * `None` only when the two-sided `u64` sum overflows), the exact sum is always
+ * representable here.
+ *
+ * STUB: returns `0n` — the checked two-side sum lands with the cross-margin
+ * implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST sweep pins the
+ * contract.
+ */
+export function accountMarginRequired(nLong: bigint, nShort: bigint, bps: number): bigint {
+  // STUB: `marginRequired(nLong, bps) + marginRequired(nShort, bps)` arrives
+  // with the cross-margin implementation task.
+  return 0n;
+}
+
+/**
+ * Whether the ACCOUNT is liquidatable (REQ-A2-1/REQ-A2-2): the account has
+ * exposure (`nLong + nShort > 0`) and `equity < Σ_side marginRequired(n_side,
+ * bps)` — a **strict** `<` (equality is healthy). A zero-exposure account is
+ * never liquidatable: the short-circuit fires before the comparison.
+ *
+ * STUB: returns `false` — the account-level predicate lands with the
+ * cross-margin implementation task; the red SDK-ACCOUNT-HEALTH-MIRRORS-RUST
+ * sweep pins the contract.
+ */
+export function accountLiquidatable(
+  deposited: bigint,
+  pnlSum: bigint,
+  nLong: bigint,
+  nShort: bigint,
+  bps: number,
+): boolean {
+  // STUB: the zero-exposure short-circuit + `equity < requirement` arrives
+  // with the cross-margin implementation task.
+  return false;
+}

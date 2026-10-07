@@ -34,14 +34,27 @@ pub fn deposit(deposited: u64, amount: u64) -> Option<u64> {
 }
 
 /// Withdraw transition: `deposited - amount`, guarded by the free-collateral
-/// seam.
+/// seam and the account-level equity gate.
 ///
-/// Succeeds **only** when `amount <= free_collateral(deposited, reserved)`,
-/// returning `Some(deposited - amount)`; otherwise (including `amount > free`,
-/// or a `reserved > deposited` invariant violation) it returns `None` and the
-/// caller leaves the ledger untouched. `amount == free` is allowed and returns
-/// the remaining `deposited` (the reserved amount).
-pub fn withdraw(deposited: u64, reserved: u64, amount: u64) -> Option<u64> {
+/// The full v2 contract (REQ-A2-3): succeeds **only** when
+/// `amount <= free_collateral(deposited, reserved)` AND
+/// `equity - amount >= reserved`, where `equity = deposited as i128 + pnl_sum`
+/// — the post-withdraw equity must stay at or above the reserved
+/// (initial-margin) requirement. On any refusal (`amount` past the free seam,
+/// a `reserved > deposited` invariant violation, or the equity gate) it returns
+/// `None` and the caller leaves the ledger untouched. `amount == free` is
+/// allowed when the equity gate permits it; on success it returns
+/// `Some(deposited - amount)`.
+///
+/// STUB: the `pnl_sum` equity gate is not applied yet — the body keeps the
+/// old ledger-only seam semantics until the cross-margin task lands; the red
+/// `withdraw_blocked_below_initial_margin` property test below pins the full
+/// contract.
+pub fn withdraw(deposited: u64, reserved: u64, pnl_sum: i128, amount: u64) -> Option<u64> {
+    // STUB: `pnl_sum` (the signed Σ unrealized-PnL over both sides) is
+    // deliberately ignored — the equity gate `equity - amount >= reserved`
+    // arrives with the cross-margin margin model (REQ-A2-3).
+    let _ = pnl_sum;
     let free = free_collateral(deposited, reserved)?;
     if amount > free {
         return None;
@@ -104,7 +117,8 @@ mod tests {
             amount in any::<u64>(),
         ) {
             let free = deposited.checked_sub(reserved);
-            let w = crate::collateral::withdraw(deposited, reserved, amount);
+            // pnl_sum = 0: at zero PnL the equity gate reduces to the free seam.
+            let w = crate::collateral::withdraw(deposited, reserved, 0, amount);
             match free {
                 Some(f) if amount <= f => {
                     prop_assert_eq!(
@@ -131,7 +145,7 @@ mod tests {
             reserved in any::<u64>(),
             amount in any::<u64>(),
         ) {
-            if let Some(new_deposited) = crate::collateral::withdraw(deposited, reserved, amount) {
+            if let Some(new_deposited) = crate::collateral::withdraw(deposited, reserved, 0, amount) {
                 prop_assert!(new_deposited >= reserved, "post-withdraw deposited >= reserved");
                 prop_assert!(new_deposited <= deposited, "withdraw never increases deposited");
             }
@@ -145,7 +159,7 @@ mod tests {
             amount in any::<u64>(),
         ) {
             if let Some(up) = crate::collateral::deposit(deposited, amount) {
-                if let Some(down) = crate::collateral::withdraw(up, 0, amount) {
+                if let Some(down) = crate::collateral::withdraw(up, 0, 0, amount) {
                     prop_assert_eq!(
                         down,
                         deposited,
@@ -169,6 +183,51 @@ mod tests {
             if let (Some(a), Some(b)) = (f_lo, f_hi) {
                 prop_assert!(a >= b, "free is non-increasing in reserved");
             }
+        }
+
+        // REQ-A2-3 / WITHDRAW-BLOCKED-BELOW-INITIAL-MARGIN: on top of the
+        // ledger-only free seam, a withdrawal must keep the post-withdraw
+        // equity (`deposited + pnl_sum - amount`) at or above `reserved` (the
+        // initial-margin requirement); otherwise it is refused and the ledger
+        // is untouched. The `pnl_sum < 0` cases are exactly where this diverges
+        // from the old two-arg seam gate.
+        #[test]
+        fn withdraw_blocked_below_initial_margin(
+            deposited in any::<u64>(),
+            reserved in any::<u64>(),
+            pnl_sum in any::<i128>(),
+            amount in any::<u64>(),
+        ) {
+            // Spec expectation: the free seam first, then the equity gate.
+            // `deposited - amount` is exact in the accepting branch
+            // (`amount <= free <= deposited`).
+            let expected = deposited.checked_sub(reserved).and_then(|free| {
+                if amount > free {
+                    return None;
+                }
+                // Saturating only at magnitudes the comparison already decides
+                // (the repo forbids panicking math; the exact i128 sum can
+                // overflow only for `pnl_sum` within `u64::MAX` of `i128::MAX`,
+                // far above every value the gate can turn on).
+                let post_equity = (deposited as i128)
+                    .saturating_add(pnl_sum)
+                    .saturating_sub(amount as i128);
+                if post_equity < reserved as i128 {
+                    return None;
+                }
+                Some(deposited - amount)
+            });
+            prop_assert_eq!(
+                crate::collateral::withdraw(deposited, reserved, pnl_sum, amount),
+                expected,
+                "withdraw must block when the post-withdraw equity \
+                 (deposited + pnl_sum - amount) falls below reserved \
+                 (deposited={}, reserved={}, pnl_sum={}, amount={})",
+                deposited,
+                reserved,
+                pnl_sum,
+                amount
+            );
         }
     }
 }
