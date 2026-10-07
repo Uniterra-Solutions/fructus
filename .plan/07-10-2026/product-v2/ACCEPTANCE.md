@@ -33,8 +33,8 @@ measurement; see below.
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this
 block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: **plan** — red-suite authoring waves in flight
-- Freeze sha: pending
+- Phase: **freeze** — red baseline verified by main-agent re-run; implement (red→green) next
+- Freeze sha: `a741b28` (boundary commit; this record commit follows)
 - Shards: baseline captured (Rust 251/251 green, log `baseline-nextest.log`; TS sdk 62 / cli 19 /
   publisher 9 green). **Wave A ✓** (S_P1 Rust stubs A + S3 SDK stubs; spot-checks re-run by main
   agent pass; `market (mut)` reconciled in stubs+PRD). **Wave B ✓** (R-ACC: liquidation
@@ -59,8 +59,11 @@ block FIRST after a compaction, a new session or a skill edit)
  withdrawal_blocked_by_reserved). **R-EDITS dispatched** (collateral_cpi helper + src/tests.rs
  doc audits — the FINAL authoring shard). **R-EDITS ✓** (collateral_cpi 6/6 green; tests.rs 87
  run / 84 pass / 3 intended doc-reds + 1 pin; clippy/fmt/check clean; both `.so` staged copies
- mtime-touched with sha verified unchanged). **ALL AUTHORING COMPLETE.** Now: full Rust audit +
- workspace collateral pass (main-agent) → freeze commits.
+ mtime-touched with sha verified unchanged). **FREEZE ✓** — main-agent re-ran every shard command
+ (Rust audit: workspace 265 run / 243 pass / 22 fail — 22 reds = 8 lib + 14 bank, all intended,
+ zero unintended, zero sidecars; TS audit: all 15 commands match shard reports; clippy / fmt /
+ check clean; `.so` sha 32d71b86 fresh). Boundary commit `a741b28` (56 files, +14,678/−592).
+ Evidence: `evidence/{rust-audit,ts-audit}/`.
  - Open findings: none
  - Impl-wave flags (from shards): T7 `OperatorBindParams`/`OperatorRevokeParams` need `userAta`;
  T9 faucet caps calibrate to a measured drip; T10 `KeeperOptions` needs a keypair channel
@@ -70,11 +73,11 @@ block FIRST after a compaction, a new session or a skill edit)
 - Holds / waivers: D6 (hedge-mode, no netting) + D17 (in-place deploy attempt) recorded as
   **defaulted — vetoable until implementation begins** (user not reached at plan time; first
   clarify round cancelled without answers)
-- Next action: dispatch queue is live (Waves C/D); on each completion, spot-verify by command and
-  dispatch the next shard per the wave plan. Notes: T7 flagged that `OperatorBindParams` /
-  `OperatorRevokeParams` must gain `userAta: PublicKey` during implementation; T8 added the
-  `foldIndexerEvents` seam; T9 faucet caps calibrate to a measured drip. Evidence dir:
-  `~/.hermes/cache/scratch/fructus-run/evidence/` (+ shard-local dirs).
+- Next action: **implement phase** (red→green shards): W1 program A1 (operator.rs + lib.rs handler
+  bodies + operator_cpi/operator:: greens) → W2 program A2 (account fns + liquidate + withdraw gate
+  greens) → W3 SDK (decoders/health/browser) → W4 server core (indexer/auth/faucet/operator/keeper)
+  → W5 server API/WS + openapi → W6 e2e walk + docs → full verdict. Impl-wave flags above apply.
+  Evidence dir: `~/.hermes/cache/scratch/fructus-run/evidence/`.
 
 ## Run commands (each executed once before being written here — at red-baseline collection)
 
@@ -99,7 +102,7 @@ block FIRST after a compaction, a new session or a skill edit)
 
 | REQ | Proposition (test title) | Generator domain | Counterexample shape | Test site (file : title) | Run command | Baseline |
 | --- | --- | --- | --- | --- | --- | --- |
-| `REQ-A1-1` | `OPERATOR-LAYOUT-PINNED: the Operator payload is exactly 97 bytes and its PDA round-trips through create_program_address.` | fixed vectors (fresh keypairs, extreme bytes) + LEN const arithmetic | payload ≠ 97; PDA derived with bump mismatch | `src/state.rs : operator_len_pins_the_borsh_payload` + `: operator_pda_seed_round_trip` | `cargo nextest run -E 'binary(fructus) and test(/^state::/)'` | red |
+| `REQ-A1-1` | `OPERATOR-LAYOUT-PINNED: the Operator payload is exactly 97 bytes and its PDA round-trips through create_program_address.` | fixed vectors (fresh keypairs, extreme bytes) + LEN const arithmetic | payload ≠ 97; PDA derived with bump mismatch | `src/state.rs : operator_len_pins_the_borsh_payload` + `: operator_pda_seed_round_trip` | `cargo nextest run -E 'binary(fructus) and test(/^state::/)'` | green (pin) |
 | `REQ-A1-2` | `SET-OPERATOR-CREATES-ROTATES-REVOKES: set_operator lazily creates, overwrites and revokes the record, revoke state stored as Pubkey::default(), never closes.` | bank: create → rotate → revoke → re-bind sequence; squatted-PDA case | record missing after create; stale operator after rotate; account closed on revoke; squat not rejected | `tests/operator_cpi.rs : set_operator_creates_rotates_revokes` | `cargo nextest run -E 'binary(operator_cpi)'` | red |
 | `REQ-A1-2` | `SET-OPERATOR-IS-USER-ONLY: only the subject user's signature mutates the record.` | bank: stranger + operator-key attempts | non-user mutation succeeds | `tests/operator_cpi.rs : set_operator_is_user_only` | same | red |
 | `REQ-A1-3` | `OPERATOR-DEPOSIT-MOVES-FUNDS-FOR-USER: with the bind approval, operator_deposit_collateral moves USDC user→vault and credits the ledger, operator key as the only signer.` | bank: bound user, approve, deposit; repeated deposits; claim-payout case | balances/ledger unchanged; extra signature required; credit to operator | `tests/operator_cpi.rs : operator_deposit_moves_funds_for_user` | same | red |
@@ -120,7 +123,7 @@ block FIRST after a compaction, a new session or a skill edit)
 | `REQ-A2-3` | `WITHDRAW-BLOCKED-BELOW-INITIAL-MARGIN: a withdrawal leaving equity < initial requirement fails and moves nothing; one keeping ≥ it succeeds.` | proptest pure gate (full domain) + bank (negative PnL, boundary ±1, pristine sides) | gate passes wrongly; tokens moved on failure; pristine side mishandled | `src/collateral.rs : withdraw_blocked_below_initial_margin` + `tests/positions_cpi.rs : withdraw_blocked_below_initial_margin` | collateral + positions commands | red |
 | `REQ-A2-4` | `DEPOSIT-IMPROVES-ACCOUNT-HEALTH: depositing raises equity one-for-one; a sufficient deposit flips account_liquidatable to false.` | bank: underwater → deposit → heal; boundary (±1 unit) | predicate unchanged; non-monotone | `tests/positions_cpi.rs : deposit_improves_account_health` | positions command | red |
 | `REQ-A2-5` | `SDK-ACCOUNT-HEALTH-MIRRORS-RUST: TS account-health mirrors are byte-identical to the Rust formulas across a seeded ≥10k-case sweep.` | seeded xorshift sweep + pinned specials | any divergence | `sdk/test/account-health.test.ts` | `cd sdk && npx tsx --test test/account-health.test.ts` | red |
-| `REQ-A2-6` | `NO-PER-POSITION-LIQUIDATION-REMAINS: source scan finds no per-position liquidatable/equity path (positive control: account-level definitions exist).` | source-embedding scan over src/ + tests/ | stale per-position fn/tests remain | `src/tests.rs : no_per_position_liquidation_remains` | tests command | red |
+| `REQ-A2-6` | `NO-PER-POSITION-LIQUIDATION-REMAINS: source scan finds no per-position liquidatable/equity path (positive control: account-level definitions exist).` | source-embedding scan over src/ + tests/ | stale per-position fn/tests remain | `src/tests.rs : no_per_position_liquidation_remains` | tests command | green (pin) |
 | `REQ-A2-7` | `DOCS-ACCOUNT-MARGIN-MODEL: liquidation.md, positions.md, api-reference.md carry the account-level model + new liquidate signature.` | source-embedding scan | stale per-position text; missing signature | `src/tests.rs : docs_account_margin_model` | tests command | red |
 | `REQ-B-2` | `INDEXER-EVENT-DIFF-NO-LOSS-NO-DUP: folding any snapshot sequence (out-of-order, duplicated, wrapped, gapped→resync) yields each fill/funding event exactly once in seq order.` | seeded sequences + hostile specials (empty, wrap, gap, dup) | lost/dup events; order violations | `server/test/indexer.test.ts` | `cd server && npx tsx --test --test-force-exit test/indexer.test.ts` | red |
 | `REQ-B-2` | `INDEXER-STATE-MATCHES-CHAIN: after resync against a live validator, every indexed account decodes byte-identically to a direct RPC read.` | e2e: seeded validator state | mismatch | `server/test/indexer.test.ts` (e2e section) | same | red |
@@ -136,22 +139,25 @@ block FIRST after a compaction, a new session or a skill edit)
 | `REQ-B-9` | `E2E-PRODUCT-WALK: the bind→deposit→trade→close→withdraw walk succeeds end-to-end with the operator as the sole signer of the operator steps.` | e2e full walk (incl. SIWS login + faucet) | any step fails; extra signer needed | `server/test/e2e.test.ts` | same as B-5 | red |
 | `REQ-C-1` | `API-CONTRACT-MATCHES-OPENAPI: the route table and openapi.json name exactly the same paths+methods; every /actions/* route is JWT-gated.` | parse openapi.json + route table | mismatch; unguarded action | `server/test/api.test.ts` | same | red |
 | `REQ-C-2` | `SDK-NO-NODE-BUILTINS: no module reachable from sdk/src/index.ts imports a node: builtin (positive control: the module graph is non-empty).` | import-graph scan | any node: import | `sdk/test/browser.test.ts` | `cd sdk && npx tsx --test test/browser.test.ts` | red |
-| `REQ-C-2` | `SDK-DISCRIMINATOR-TABLES-MATCH-SHA256: every table entry equals sha256("global:"|"account:"+name)[0..8]; sizes pinned.` | all entries vs node:crypto | mismatch; missing entry | `sdk/test/browser.test.ts` | same | red |
+| `REQ-C-2` | `SDK-DISCRIMINATOR-TABLES-MATCH-SHA256: every table entry equals sha256("global:"|"account:"+name)[0..8]; sizes pinned.` | all entries vs node:crypto | mismatch; missing entry | `sdk/test/browser.test.ts` | same | green (pin) |
 | `REQ-C-3` | `SHARED-DTOS-STAY-IN-SYNC: runtime shape checks validate every e2e response body against the sdk/src/api.ts DTO shapes (typecheck gate is the compile half).` | e2e responses + fixtures | drift | `server/test/api.test.ts` | same | red |
 | `REQ-C-4` | `DOCS-API-SURFACE-COMPLETE: docs/api.md names every route path and WS message type; the index links resolve.` | source-embedding scan | missing path/message | `src/tests.rs : docs_api_surface_complete` | tests command | red |
 
 ## Red baseline
 
-- Must be RED on today's tree: every row above (none of the new surfaces exists yet; stubs make
-  failures behavioural assertion failures).
+- Must be RED on today's tree: every row above whose Baseline cell says red (none of those surfaces
+  exists yet; stubs make failures behavioural assertion failures); cells marked green (pin) are
+  guards on surfaces the freeze delta touches without breaking.
 - Already GREEN on today's tree (regression pins; must stay green through the freeze delta):
   the pre-existing suites — `src/tests.rs`, per-module `#[cfg(test)]`, both bank suites, both
   review suites, `publisher`/`sdk`/`cli` TS suites. Total measured at plan time: 251 Rust + 90 TS
   (see run log `baseline-nextest.log`).
-- Collateral pass (once, pre-freeze; smallest suite covering every touched surface): **pending** —
-  record `N intended red / M old green / 0 unintended` here at freeze.
+- Collateral pass (once, pre-freeze; smallest suite covering every touched surface): **DONE** —
+  Rust workspace `265 run / 243 pass / 22 fail` (intended 22 = 8 lib + 14 bank; 0 unintended);
+  TS 15/15 commands re-run by the main agent, counts match shard reports. Evidence:
+  `evidence/{rust-audit,ts-audit}/`.
 - Evidence: `~/.hermes/cache/scratch/fructus-run/evidence/` (red-baseline logs, per-shard
-  commands captured OUTSIDE the repo), captured 2026-10-07; freeze sha pending.
+  commands captured OUTSIDE the repo), captured 2026-10-07; freeze sha `a741b28`.
 
 ## Alternative evidence (non-PBT)
 
