@@ -26,7 +26,7 @@ payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
 | `POST` | `/auth/challenge` | public | Issue the SIWS challenge: `{wallet}` → `{signInInput, nonce, expiresAt}` (expiry ≤ 5 min) |
 | `POST` | `/auth/verify` | public | Verify the ed25519 signature over `signInInput`; issue the 24 h session `{token, wallet}` |
 | `POST` | `/bind/prepare` | public | Build the wallet-signable operator bind transaction (base64): `[spl approve, set_operator]` + `{operator, operatorRecord}` |
-| `POST` | `/bind/confirm` | public | Submit the signed bind transaction; reports `status: "bound"` or `status: "revoked"` with the operator |
+| `POST` | `/bind/confirm` | public | Verify the wallet-submitted bind transaction landed (fetch by signature) and report the on-chain operator record: `status: "bound"` or `status: "revoked"` |
 | `GET` | `/me` | JWT | Full portfolio: `deposited`, `reserved`, `claimable`, `free`, `equity`, `requirementInitial`, `requirementMaint`, `health`, `operator`, `positions` |
 | `GET` | `/me/positions` | JWT | The wallet's position views (one per side) |
 | `GET` | `/me/history` | JWT | Indexed fills + funding rows in seq order |
@@ -42,8 +42,12 @@ payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
 
 Everything under `/me` and `/actions` is JWT-gated (`Authorization: Bearer
 <token>`); `/auth/*`, `/bind/*`, `/market*`, `/faucet` and `/healthz` are public.
-Every `/actions/*` response is the `tx_log` row for the attempt:
-`{actionId, signature?, status: "queued" | "sent" | "confirmed" | "failed", error?}`.
+Every successful `/actions/*` response is the confirmed attempt:
+`{actionId, signature, status: "confirmed"}` — the route answers once the
+action has been submitted and confirmed on chain. A rejected or failed action
+surfaces through the error envelope (`{ok: false, error: {...}}`) instead; the
+wallet receives the `tx` WebSocket push with the same confirmed
+`ActionResponse` when the action lands (see [api/ws.md](api/ws.md)).
 
 ## SIWS login flow
 
@@ -73,13 +77,20 @@ sequenceDiagram
     participant P as Fructus program
     W->>S: POST /bind/prepare {wallet}
     S-->>W: {transaction: [spl approve(Operator PDA, u64::MAX), set_operator(operator)], operator, operatorRecord}
-    W->>W: sign transaction
+    W->>W: sign transaction (fee payer + sole signer)
+    W->>P: submit bind transaction
+    P-->>W: confirmed
     W->>S: POST /bind/confirm {transaction, signature}
-    S->>P: submit bind transaction
-    P-->>S: confirmed
+    S->>P: fetch the landed tx by signature + read the Operator record
+    P-->>S: executed tx + on-chain Operator record
     S-->>W: {status: "bound", operator}
     Note over W,P: revoke = [spl approve(0), set_operator(default)]
 ```
+
+The server never holds the subject's keys and never submits the bind
+transaction: `/bind/prepare` returns it unsigned (base64), the wallet signs and
+sends it, and `/bind/confirm` verifies the landed result — the on-chain
+`Operator` record, not the server, is the authority for the reported status.
 
 After a bind, the operator key can act for the wallet through the program's
 `operator_*` instructions without further wallet signatures — see

@@ -29,8 +29,6 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 | Understand the funding engine | [modules/funding.md](modules/funding.md) |
 | Understand liquidation | [modules/liquidation.md](modules/liquidation.md) |
 | Understand the collateral vault | [modules/collateral.md](modules/collateral.md) |
-| Understand operator delegation | [modules/operator.md](modules/operator.md) |
-| Call the HTTP/WS API | [api.md](api.md) |
 | Understand the off-chain keeper | [modules/publisher.md](modules/publisher.md) |
 | Use the SDK / CLI / deploy to devnet | [SDK, CLI & deployment](#sdk-cli--deployment) |
 | Run tests / fuzz | [testing.md](testing.md) |

@@ -202,7 +202,7 @@
         },
         "responses": {
           "200": {
-            "description": "The tx_log row for the attempt.",
+            "description": "The confirmed attempt result: { actionId, signature, status: \"confirmed\" }. Failures surface as the error envelope; the WS tx push fires on confirmation.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -230,7 +230,7 @@
         },
         "responses": {
           "200": {
-            "description": "The tx_log row for the attempt.",
+            "description": "The confirmed attempt result: { actionId, signature, status: \"confirmed\" }. Failures surface as the error envelope; the WS tx push fires on confirmation.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -263,7 +263,7 @@
         },
         "responses": {
           "200": {
-            "description": "The tx_log row for the attempt.",
+            "description": "The confirmed attempt result: { actionId, signature, status: \"confirmed\" }. Failures surface as the error envelope; the WS tx push fires on confirmation.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -294,7 +294,7 @@
         },
         "responses": {
           "200": {
-            "description": "The tx_log row for the attempt.",
+            "description": "The confirmed attempt result: { actionId, signature, status: \"confirmed\" }. Failures surface as the error envelope; the WS tx push fires on confirmation.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -325,7 +325,7 @@
         },
         "responses": {
           "200": {
-            "description": "The tx_log row for the attempt.",
+            "description": "The confirmed attempt result: { actionId, signature, status: \"confirmed\" }. Failures surface as the error envelope; the WS tx push fires on confirmation.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionEnvelope" } } }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
