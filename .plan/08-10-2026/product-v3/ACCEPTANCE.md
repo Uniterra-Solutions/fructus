@@ -10,14 +10,15 @@ inspects) or it is nothing. The REQ set below EQUALS the REQ set of `PRD.md`.
 
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: implement — complete and verified; live-stack A-items next, then the review phase
-- Freeze sha: `8b1eee2b4465ae636840b296c35d4f0a4fc519d0`; amendments: `d1d0e754…` (missing account-panel red test) · `756f208` (trade-gate:134 + review-server-interaction:313, both with quoted measurements)
+- Phase: implement — complete, verified, and live-walked (A-F-1/A-F-2 fresh-wallet pass incl. bind/close/chart); next: the review phase
+- Freeze sha: `8b1eee2b4465ae636840b296c35d4f0a4fc519d0`; amendments: `d1d0e754…` (missing account-panel red test) · `756f208` (trade-gate:134 + review-server-interaction:313, both with quoted measurements) · `895f9b3` (integer-amount regression cases, quoted counterexample)
 - Shards: S1 server-data ✓ · S2 server-runtime ✓ · S3 fe-core ✓ · S4 fe-infra ✓ · S5a fe-ui ✓ · S6 scripts ✓ — every shard command re-run green by the main agent; the kline-e2e integration gate ✓
-- Verdicts (main agent): server full suite 115/115 (serial) · frontend 17/17 + tsc + build ✓ · scripts 4/4 + tsc ✓ · sdk 86/86 ✓ (collateral) — implement commits `f16ba69` · `dd5b028` · `255a4af` · `6311e20` · `756f208`
-- Integration fixes (measured): indexer `stop()` drains in-flight subscription ingests (full-suite catch — REVIEW-INDEXER-RESTART-REPLAY); trade-gate (c) fills a valid size before the enabled assert; review-server-interaction's tick vocabulary gains one `settle_fill` (K-5 landing); keeper.test.ts untouched — the predicted supersession did NOT materialize (measured green)
-- Open findings: none
-- Holds / waivers: none
-- Next action: A-items on the live stack (devstack + server + MM bot + frontend; A-V-1/A-M-1/A-F-1/A-F-2), then the review phase (fresh reviewers vs plan + diff).
+- Verdicts (main agent): server full suite 115/115 (serial) · frontend 17/17 + tsc + build ✓ · scripts 4/4 + tsc ✓ · sdk 86/86 ✓ (collateral) — implement commits `f16ba69` · `dd5b028` · `255a4af` · `6311e20` · `756f208`; walkthrough fixes `7bcd2b8` + `895f9b3`
+- Integration fixes (measured): indexer `stop()` drains in-flight subscription ingests (full-suite catch — REVIEW-INDEXER-RESTART-REPLAY); trade-gate (c) fills a valid size before the enabled assert; review-server-interaction's tick vocabulary gains one `settle_fill` (K-5 landing); keeper.test.ts untouched — the predicted supersession did NOT materialize (measured green); walkthrough fixes — integer `parseAmount` scaling (live counterexample: `"100"` deposited as 0.0001), raw close-size validation, HTTP `confirmSignature` for bind/airdrop (the WS-subscription confirm hangs through the dev proxy; tx landed while the client sat stuck), the chart controller actually MOUNTED (was test-only reach), `autoSize` resize
+- Open findings (report-only per the owner's bug policy — fixes await an explicit go): **F1** crossing LIMIT orders never book the taker side — the operator routes limits through the book-only `place_limit_order` while market orders go through `operator_open_position` (pre-existing v2 routing gap; evidence: fill seq2 vs unchanged position/collateral) · **F2** the MM bot quotes without protocol collateral → its maker fills can never settle (`settle_fill` → `InsufficientFreeCollateral`; 81 failed attempts in tx_log) · **F3** a deposit larger than the wallet's token balance surfaces as 500 `internal` (pre-existing error-mapping gap on `OperatorDepositCollateral` token errors)
+- Live evidence: fresh-wallet walkthrough (connect → SIWS → faucet → bind → deposit 5 → market buy 0.5 → tape/book/candles live → close 0) with screenshots; `/market/candles` serves real `timeMs` buckets; the 5m switch refetches (2 · 5m); `A-V-1` clean devstack boot + env blocks
+- Holds / waivers: the A-F-1 "limit open" leg is discharged only as far as F1 allows (limit placed + matched on-chain; the taker-side booking gap is the standing F1 finding)
+- Next action: review phase (fresh reviewers vs plan + diff), then the final gates and the owner report.
 
 ## Run commands (each executed once before being written here)
 
