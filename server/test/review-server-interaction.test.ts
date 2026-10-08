@@ -745,7 +745,13 @@ test("REVIEW-API-PRIVATE-ROUTES-TOKEN-MATRIX: every private route 401s under eve
     const validToken = craftJwt(JWT_SECRET, { sub: wallet.publicKey.toBase58(), iat: now, exp: now + 600 });
     const tampered = (() => {
       const [h, p, s] = validToken.split(".");
-      return `${h}.${p}.${s!.slice(0, -1)}${s!.endsWith("A") ? "B" : "A"}`;
+      // AMEND (measured flake): swapping the LAST base64url char only flips
+      // padding bits — a byte-level no-op whenever the original char is one of
+      // A–D (top 2 bits zero), so the "tampered" token still verified ~1/16 of
+      // runs (measured: "GET /me with tampered token must 401 (got 200)"). The
+      // FIRST char of the signature is a full 6-bit group: flipping it is
+      // always a real tamper.
+      return `${h}.${p}.${s!.startsWith("A") ? "B" : "A"}${s!.slice(1)}`;
     })();
     const states: Array<[string, string | undefined]> = [
       ["no token", undefined],
