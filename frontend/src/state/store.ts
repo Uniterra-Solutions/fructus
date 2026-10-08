@@ -1,5 +1,6 @@
 //! Terminal store: app state + WS message reduction. Pure reducers, tiny pub/sub.
-//! Stub — product-v3 freeze.
+//! `user` pushes carry signed deltas → applied onto the last snapshot;
+//! `trade` pushes fold into the candle series (current interval) and the tape.
 
 import type {
   ActionResponse,
@@ -11,7 +12,14 @@ import type {
   UserPortfolio,
 } from "fructus-sdk/src/api.js";
 import { initialAuthState, type AuthState } from "./auth.js";
-import type { CandleInterval } from "../lib/candles.js";
+import {
+  CANDLE_INTERVAL_MS,
+  DEFAULT_CANDLE_LIMIT,
+  applyTradeToCandles,
+  type CandleInterval,
+} from "../lib/candles.js";
+import { mergeTrades } from "../lib/tape.js";
+import { applyPortfolioDeltas } from "./portfolio.js";
 import type { WsStatus } from "../api/ws.js";
 
 export interface TerminalState {
@@ -41,8 +49,30 @@ export function initialState(): TerminalState {
 }
 
 /** Route one WS push message through the pure state reducers. */
-export function reduceWsMessage(state: TerminalState, _message: ServerWsMessage): TerminalState {
-  return state;
+export function reduceWsMessage(state: TerminalState, message: ServerWsMessage): TerminalState {
+  switch (message.type) {
+    case "book":
+      return { ...state, book: message.book };
+    case "mark":
+      return { ...state, market: message.mark };
+    case "trade": {
+      const intervalMs = CANDLE_INTERVAL_MS[state.interval];
+      return {
+        ...state,
+        candles: applyTradeToCandles(state.candles, message.trade, intervalMs, DEFAULT_CANDLE_LIMIT),
+        trades: mergeTrades(state.trades, [message.trade]),
+      };
+    }
+    case "user": {
+      // Deltas apply onto the last snapshot; before the bootstrap lands there
+      // is no baseline to apply onto, so the push is dropped (the REST read
+      // right after login re-snapshots anyway).
+      if (state.portfolio === null) return state;
+      return { ...state, portfolio: applyPortfolioDeltas(state.portfolio, message.portfolio) };
+    }
+    case "tx":
+      return { ...state, lastAction: message.action };
+  }
 }
 
 export interface TerminalStore {
