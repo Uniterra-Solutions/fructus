@@ -75,13 +75,13 @@ inspects) or it is nothing. The REQ set below EQUALS the REQ set of `PRD.md`.
 
 ## Red baseline
 
-- Must be RED on today's tree: every proposition in the table above (35 propositions across 21 files; `CANDLES-REJECT-BAD-PARAMS` is asserted at both its unit and e2e sites → 36 red tests).
+- Must be RED on today's tree: every proposition in the table above (35 propositions across 22 files; `CANDLES-REJECT-BAD-PARAMS` is asserted at both its unit and e2e sites → 37 red tests).
 - Already GREEN on today's tree (regression pins): `API-CONTRACT-MATCHES-OPENAPI` (existing; kept green by updating `docs/api/openapi.json` and `ROUTES` together in the freeze commit), all pre-existing server/sdk/cli/publisher/interfaces suites.
 - Collateral pass (once, pre-freeze; smallest suites covering every surface the stubs touch —
   `ROUTES`+openapi → `api.test.ts`; `KeeperTickResult` → `keeper.test.ts`; the sdk type is
   erased → `sdk` suite; scripts config edits → the offline e2e dry-run):
-  36 intended red / api.test.ts + keeper.test.ts + sdk (86/86) + scripts dry-run all green / 0 unintended.
-- Evidence: `/root/.hermes/cache/scratch/red/` (per-file red logs + collateral logs), captured 2026-10-08; freeze sha `<sha>`.
+  37 intended red / api.test.ts + keeper.test.ts + sdk (86/86) + scripts dry-run all green / 0 unintended.
+- Evidence: `/root/.hermes/cache/scratch/red/` (per-file red logs + collateral logs), captured 2026-10-08; freeze sha `8b1eee2b4465ae636840b296c35d4f0a4fc519d0` + the account-panel amendment commit that follows it.
 
 ## Alternative evidence (non-PBT)
 
