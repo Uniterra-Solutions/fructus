@@ -62,7 +62,8 @@ export interface Route {
  * Upper bound of fills scanned per candles request (product-v3 REQ-K-2); the
  * time window already bounds the buckets, this keeps the scan generous but finite.
  */
-const CANDLES_FILLS_SCAN_LIMIT = 100_000;
+/** Cap on fills scanned per candles request (newest rows win when exceeded). */
+export const CANDLES_FILLS_SCAN_LIMIT = 100_000;
 
 /** The contract: exactly the routes of PRD REQ-B-7. */
 export const ROUTES: readonly Route[] = [

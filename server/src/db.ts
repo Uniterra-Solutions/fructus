@@ -248,7 +248,13 @@ export function openDb(path: string): Db {
   // every open of a fresh or already-migrated store is a no-op.
   const fillColumns = db.prepare("PRAGMA table_info(fills)").all() as Array<{ name: string }>;
   if (!fillColumns.some((column) => column.name === "block_time_ms")) {
-    db.exec("ALTER TABLE fills ADD COLUMN block_time_ms INTEGER;");
+    try {
+      db.exec("ALTER TABLE fills ADD COLUMN block_time_ms INTEGER;");
+    } catch (error) {
+      // A concurrent opener can win the check/ALTER race — the column exists
+      // either way; anything else is a real failure and rethrows.
+      if (!/duplicate column/i.test(String(error))) throw error;
+    }
   }
 
   // Named binding (not `this`) so the helpers stay callable when destructured.
@@ -305,14 +311,19 @@ export function openDb(path: string): Db {
     },
 
     listFillsSince(market, minTimeMs, limit = 100_000) {
+      // Newest-first read (reversed before return): when the window holds more
+      // rows than `limit`, the rows kept must be the LATEST ones — the candle
+      // window has to end at the true latest bucket (REQ-K-2), which an
+      // oldest-first truncation silently breaks past the scan cap.
       return db
         .prepare(
           `SELECT seq, slot, market, owner, side, price, size, block_time_ms FROM fills
            WHERE market = ? AND block_time_ms IS NOT NULL AND block_time_ms >= ?
-           ORDER BY seq ASC LIMIT ?`,
+           ORDER BY seq DESC LIMIT ?`,
         )
         .all(market, minTimeMs, limit)
-        .map((row) => toFillRow(row));
+        .map((row) => toFillRow(row))
+        .reverse();
     },
 
     listRecentFills(market, limit) {

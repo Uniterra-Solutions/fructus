@@ -90,13 +90,29 @@ export function createIndexer(opts: IndexerOptions): Indexer {
   let resyncTimer: NodeJS.Timeout | null = null;
   let foldState: IndexerFoldState | null = null;
   let lastIndexedSlot: number | null = null;
-  // Fire-and-forget subscription ingests, drained by stop() so a caller that
-  // stops the indexer observes everything already delivered (a live update must
-  // land even when stop() follows immediately — REVIEW-INDEXER-RESTART-REPLAY).
-  const inflightIngests = new Set<Promise<void>>();
-  function trackIngest(promise: Promise<void>): void {
-    inflightIngests.add(promise);
-    void promise.finally(() => inflightIngests.delete(promise));
+  // Fire-and-forget work (subscription ingests, interval resyncs), drained by
+  // stop() so a caller that stops the indexer observes everything already
+  // delivered (REVIEW-INDEXER-RESTART-REPLAY) and nothing keeps writing after
+  // stop() resolves.
+  const inflightWork = new Set<Promise<void>>();
+  function trackWork(promise: Promise<void>): void {
+    inflightWork.add(promise);
+    void promise.finally(() => inflightWork.delete(promise));
+  }
+
+  // Ingest ORDER is load-bearing: the WS `trade` pushes must observe fills in
+  // ascending seq order across updates (REQ-K-4), but each ingest awaits a
+  // block-time lookup with variable latency — run every ingest through one
+  // chain (resync and subscription alike) so a later update never overtakes
+  // an earlier one.
+  let ingestChain: Promise<void> = Promise.resolve();
+  function enqueueIngest(task: () => Promise<void>): Promise<void> {
+    const queued = ingestChain.then(task, task);
+    ingestChain = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
   }
 
   // Per-process slot → block-time clock (REQ-K-1): fills carry the block time
@@ -160,9 +176,12 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     try {
       opts.db.insertFill(fill);
       return true;
-    } catch {
-      // Already folded in an earlier process lifetime (fresh fold state after a
-      // restart re-delivers the ring baseline) — the seq PK makes it a no-op.
+    } catch (error) {
+      // The seq PK makes a re-delivered fill a no-op; anything else is a real
+      // failure and must not be silently swallowed.
+      if (!/UNIQUE|PRIMARY KEY|constraint/i.test(String(error))) {
+        console.error(`fructus-server: fill insert failed: ${describe(error)}`);
+      }
       return false;
     }
   }
@@ -207,7 +226,7 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     for (const { pubkey, account } of accounts) {
       const kind = kindFor(account.data);
       if (kind === null) continue;
-      await ingest(kind, pubkey, account.data, slot);
+      await enqueueIngest(() => ingest(kind, pubkey, account.data, slot));
     }
     if (lastIndexedSlot === null || slot > lastIndexedSlot) lastIndexedSlot = slot;
   }
@@ -223,12 +242,13 @@ export function createIndexer(opts: IndexerOptions): Indexer {
           (keyed: KeyedAccountInfo, context: Context) => {
             const kind = kindFor(keyed.accountInfo.data);
             if (kind === null) return;
-            trackIngest(
-              ingest(kind, keyed.accountId, keyed.accountInfo.data, context.slot).catch(
-                (err: unknown) => {
-                  console.error(`fructus-server: indexer update failed: ${describe(err)}`);
-                },
-              ),
+            const queued = enqueueIngest(() =>
+              ingest(kind, keyed.accountId, keyed.accountInfo.data, context.slot),
+            );
+            trackWork(
+              queued.catch((err: unknown) => {
+                console.error(`fructus-server: indexer update failed: ${describe(err)}`);
+              }),
             );
           },
           "confirmed",
@@ -237,9 +257,10 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         console.error(`fructus-server: indexer subscription failed: ${describe(err)}`);
       }
       resyncTimer = setInterval(() => {
-        void resync().catch((err: unknown) => {
+        const running = resync().catch((err: unknown) => {
           console.error(`fructus-server: resync failed: ${describe(err)}`);
         });
+        trackWork(running);
       }, RESYNC_INTERVAL_MS);
       resyncTimer.unref();
     },
@@ -258,11 +279,11 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         resyncTimer = null;
       }
       started = false;
-      // Drain in-flight subscription ingests: fire-and-forget on the hot path,
-      // but stop() must be deterministic — everything the callbacks delivered
+      // Drain in-flight work: fire-and-forget on the hot path, but stop() must
+      // be deterministic — everything the callbacks and the interval delivered
       // before the unsubscribe has landed in the store (and emitted its
       // update) once stop() resolves.
-      await Promise.allSettled([...inflightIngests]);
+      await Promise.allSettled([...inflightWork]);
     },
 
     async resync(): Promise<void> {

@@ -156,8 +156,18 @@ export function computeBook(db: Db, market: PublicKey): BookView {
     order.price.toString(),
     order.size.toString(),
   ];
+  // The on-chain book stores orders insertion-ordered; the served view is
+  // sorted best-first: highest bid first, lowest ask first (REQ-B-3/REQ-F-4).
+  const byPrice = (a: [string, string], b: [string, string]): number => {
+    const left = BigInt(a[0]);
+    const right = BigInt(b[0]);
+    return left === right ? 0 : left < right ? -1 : 1;
+  };
   return {
-    bids: book.bids.filter((order) => order.active === 1).map(level),
-    asks: book.asks.filter((order) => order.active === 1).map(level),
+    bids: book.bids
+      .filter((order) => order.active === 1)
+      .map(level)
+      .sort((a, b) => byPrice(b, a)),
+    asks: book.asks.filter((order) => order.active === 1).map(level).sort(byPrice),
   };
 }
