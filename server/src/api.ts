@@ -48,6 +48,7 @@ import {
 } from "./errors.js";
 import type { Faucet } from "./faucet.js";
 import type { Keeper } from "./keeper.js";
+import { aggregateCandles, parseCandlesQuery, parseTradesLimit, toTradeView } from "./market-data.js";
 import type { CancelAction, CloseAction, OperatorService, OrderAction } from "./operator.js";
 
 export interface Route {
@@ -56,6 +57,12 @@ export interface Route {
   /** JWT-gated (REQ-B-4: everything under /me and /actions). */
   private: boolean;
 }
+
+/**
+ * Upper bound of fills scanned per candles request (product-v3 REQ-K-2); the
+ * time window already bounds the buckets, this keeps the scan generous but finite.
+ */
+const CANDLES_FILLS_SCAN_LIMIT = 100_000;
 
 /** The contract: exactly the routes of PRD REQ-B-7. */
 export const ROUTES: readonly Route[] = [
@@ -308,15 +315,39 @@ async function dispatch(deps: ApiServerDeps, req: IncomingMessage, res: ServerRe
       return;
     }
 
-    // product-v3 K-line surface — stubs until the K-line wave lands.
+    // product-v3 K-line surface (REQ-K-2/K-3): candles aggregate the timed
+    // fills of the market's window; trades read the latest fills off the tape.
     case "GET /market/candles": {
-      const data: CandlesResponse = { candles: [] };
+      const query = parseCandlesQuery(url.searchParams);
+      if (query === null) {
+        throw new BadRequestError(
+          "invalid candles query: interval must be one of 1m|5m|15m|1h|4h|1d and limit an integer in 1..1000",
+        );
+      }
+      const market = deps.market.toBase58();
+      const latest = deps.db.latestFillTimeMs(market);
+      if (latest === null) {
+        const data: CandlesResponse = { candles: [] };
+        sendJson(res, 200, { ok: true, data } satisfies ApiResponse<CandlesResponse>);
+        return;
+      }
+      const { intervalMs, limit } = query;
+      // The compact window ends at the latest timed fill's bucket; never below 0.
+      const windowFloor = Math.max(0, Math.floor(latest / intervalMs) * intervalMs - (limit - 1) * intervalMs);
+      const fills = deps.db.listFillsSince(market, windowFloor, CANDLES_FILLS_SCAN_LIMIT);
+      const data: CandlesResponse = { candles: aggregateCandles(fills, intervalMs, limit) };
       sendJson(res, 200, { ok: true, data } satisfies ApiResponse<CandlesResponse>);
       return;
     }
 
     case "GET /market/trades": {
-      const data: TradesResponse = { trades: [] };
+      const limit = parseTradesLimit(url.searchParams);
+      if (limit === null) {
+        throw new BadRequestError("invalid trades query: limit must be an integer in 1..200");
+      }
+      const data: TradesResponse = {
+        trades: deps.db.listRecentFills(deps.market.toBase58(), limit).map(toTradeView),
+      };
       sendJson(res, 200, { ok: true, data } satisfies ApiResponse<TradesResponse>);
       return;
     }

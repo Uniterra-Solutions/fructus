@@ -6,6 +6,8 @@
 //!
 //!  - `order_book` changes fan a fresh `book` (+ `mark`) out to every socket;
 //!  - `market` changes fan a fresh `mark` out to every socket;
+//!  - newly persisted fills (`update.fills`, product-v3 REQ-K-4) fan one
+//!    `trade` message per fill out to every socket, ascending by seq;
 //!  - a wallet's own account changes (`user_collateral`, `position`, `operator`)
 //!    push that wallet's portfolio CHANGE to its sockets only: the delta of the
 //!    wallet's portfolio against the state at connect / its last push.
@@ -27,6 +29,7 @@ import type { BookView, MarketView, PositionView, ServerWsMessage, UserPortfolio
 import { operatorPda, positionPda, userCollateralPda } from "fructus-sdk/src/index.js";
 import type { AuthService } from "./auth.js";
 import type { IndexerUpdate } from "./indexer.js";
+import { toTradeView } from "./market-data.js";
 
 /** Close code for a missing / invalid / expired WS token (REQ-B-7). */
 export const WS_UNAUTHORIZED = 4401;
@@ -148,6 +151,14 @@ export function attachWs(opts: WsOptions): WsHandle {
 
   /** Turn one indexed account change into the matching push message(s). */
   async function dispatchUpdate(update: IndexerUpdate): Promise<void> {
+    // REQ-K-4: newly persisted fills fan out to every socket as `trade`
+    // messages, ascending by seq (the update carries them in order; a
+    // re-delivered/duplicate fill never reaches this field).
+    if (update.fills !== undefined) {
+      for (const fill of update.fills) {
+        broadcast({ type: "trade", market, trade: toTradeView(fill) });
+      }
+    }
     if (update.kind === "order_book") {
       broadcast({ type: "book", market, book: await opts.computeBook() });
       broadcast({ type: "mark", market, mark: await opts.computeMarket() });

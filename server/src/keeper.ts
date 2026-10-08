@@ -1,9 +1,9 @@
 //! Keeper loop (REQ-B-6, D16): protocol-side automation. `tick()` is one
-//! bounded pass — crank the event queue → settle-funding sweep → settle-close
-//! sweep → liquidation sweep. Liquidation targets only accounts the state
-//! layer (`server/src/state.ts`'s read model over the indexed rows) marks
-//! liquidatable, one full-close action per account per tick; third-party
-//! liquidation stays permissionless.
+//! bounded pass — crank the event queue → settle-fill sweep → settle-funding
+//! sweep → settle-close sweep → liquidation sweep. Liquidation targets only
+//! accounts the state layer (`server/src/state.ts`'s read model over the
+//! indexed rows) marks liquidatable, one full-close action per account per
+//! tick; third-party liquidation stays permissionless.
 //!
 //! Every sweep phase is a signed (permissionless) transaction from the keeper
 //! keypair (`keypairPath`, `solana-keygen` JSON, never logged); each action is
@@ -26,17 +26,21 @@ import {
   buildCrank,
   buildLiquidate,
   buildSettleClose,
+  buildSettleFill,
   buildSettleFunding,
   decodeOrderBook,
   decodePerpMarket,
   decodePosition,
   decodeUserCollateral,
+  EVENT_QUEUE_LEN,
   marketPda,
   orderBookPda,
   pnl,
   positionPda,
   positionSideFromSideByte,
   userCollateralPda,
+  type OrderBookState,
+  type OutEventState,
   type PerpMarketState,
   type PositionState,
 } from "fructus-sdk/src/index.js";
@@ -207,6 +211,57 @@ export function createKeeper(opts: KeeperOptions): Keeper {
   }
 
   /**
+   * The settle-fill sweep (product-v3 REQ-K-5): book every unsettled maker
+   * `Fill` still in the on-chain ring's written window
+   * `[max(0, writeCursor − EVENT_QUEUE_LEN), writeCursor)` — at most
+   * `EVENT_QUEUE_LEN` fills per tick. The maker's `Position` /
+   * `UserCollateral` PDAs derive from the event's `owner` + `side` (the ring
+   * stores the maker side on fills); the keeper pays as settler. An
+   * already-settled fill is skipped (idempotent), a failed tx lands in
+   * `tx_log` and is retried next tick. Slots are read by seq position
+   * (`events[seq % EVENT_QUEUE_LEN]`) — an unwritten slot's zeroed default
+   * carries seq 0 / kind Fill / settled 0 and must never fabricate a target.
+   */
+  async function settleFillSweep(kp: Keypair): Promise<number> {
+    let settled = 0;
+    let book: OrderBookState | null;
+    try {
+      const info = await connection.getAccountInfo(orderBook, "confirmed");
+      if (info === null) return settled;
+      book = decodeOrderBook(info.data);
+    } catch {
+      return settled; // RPC hiccup — retry next tick
+    }
+    if (book === null) return settled;
+
+    const queueLen = BigInt(EVENT_QUEUE_LEN);
+    const cursor = book.eventWriteCursor;
+    const windowStart = cursor > queueLen ? cursor - queueLen : 0n;
+    const candidates: OutEventState[] = [];
+    for (let seq = windowStart; seq < cursor; seq++) {
+      const event = book.events[Number(seq % queueLen)];
+      if (event.seq !== seq) continue; // stale/zeroed slot (defaults read seq 0)
+      if (event.kind !== 0 || event.settled !== 0) continue; // not an unsettled Fill
+      candidates.push(event);
+    }
+
+    for (const event of candidates.slice(0, EVENT_QUEUE_LEN)) {
+      const owner = event.owner;
+      const instruction = buildSettleFill({
+        market,
+        orderBook,
+        position: positionPda(market, owner, event.side, programId).address,
+        userCollateral: userCollateralPda(market, owner, programId).address,
+        payer: kp.publicKey,
+        seq: event.seq,
+        programId,
+      });
+      if (await sweepAction("settle_fill", owner.toBase58(), instruction, kp)) settled += 1;
+    }
+    return settled;
+  }
+
+  /**
    * The state-layer liquidation sweep (REQ-B-6): group the indexed live
    * positions by account, evaluate the account-level predicate
    * (`accountLiquidatable` over `deposited + Σ upnl` vs the both-side
@@ -289,7 +344,11 @@ export function createKeeper(opts: KeeperOptions): Keeper {
       if (await sweepAction("crank", kp.publicKey.toBase58(), crank, kp)) result.cranked += 1;
     }
 
-    // 2. Settle-funding sweep: every live position's elapsed epochs.
+    // 2. Settle-fill sweep (REQ-K-5): book the resting makers' fills still in
+    //    the ring window. Idempotent — settled fills are skipped on re-read.
+    result.settledFills += await settleFillSweep(kp);
+
+    // 3. Settle-funding sweep: every live position's elapsed epochs.
     for (const position of positions) {
       if (position.state.notional === 0n) continue;
       const instruction = buildSettleFunding({
@@ -304,7 +363,7 @@ export function createKeeper(opts: KeeperOptions): Keeper {
       }
     }
 
-    // 3. Settle-close sweep: positions carrying an unsettled closed notional.
+    // 4. Settle-close sweep: positions carrying an unsettled closed notional.
     for (const position of positions) {
       if (position.state.closedNotional === 0n) continue;
       const instruction = buildSettleClose({
@@ -319,7 +378,7 @@ export function createKeeper(opts: KeeperOptions): Keeper {
       }
     }
 
-    // 4. Liquidation sweep: one full-close action per under-margin account.
+    // 5. Liquidation sweep: one full-close action per under-margin account.
     for (const target of liquidationTargets(positions, state)) {
       const { position, owner } = target;
       const otherSide = position.state.side === 0 ? 1 : 0;

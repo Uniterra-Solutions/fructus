@@ -3,6 +3,11 @@
 //! SDK decoders, upsert into SQLite, and derive `fills` / `funding_events` from
 //! the OrderBook event ring and the funding accumulator. Full
 //! `getProgramAccounts` resync at start and every 60 s.
+//!
+//! Every newly folded fill carries the block time of its first-delivery slot
+//! (REQ-K-1, `timestamps.ts` clock), and only fills whose row insert actually
+//! succeeded ride the update event's `fills` field (REQ-K-4 → the WS `trade`
+//! push; resync re-deliveries of already-persisted fills push nothing).
 
 import type { Connection, Context, KeyedAccountInfo, PublicKey } from "@solana/web3.js";
 import {
@@ -13,6 +18,7 @@ import {
   type OutEventState,
 } from "fructus-sdk/src/index.js";
 import type { AccountKind, Db, FillRow, FundingEventRow } from "./db.js";
+import { createSlotClock } from "./timestamps.js";
 
 /** In-process update event emitted after each indexed change (REQ-B-2 → REQ-B-7 pushes). */
 export interface IndexerUpdate {
@@ -84,6 +90,22 @@ export function createIndexer(opts: IndexerOptions): Indexer {
   let resyncTimer: NodeJS.Timeout | null = null;
   let foldState: IndexerFoldState | null = null;
   let lastIndexedSlot: number | null = null;
+  // Fire-and-forget subscription ingests, drained by stop() so a caller that
+  // stops the indexer observes everything already delivered (a live update must
+  // land even when stop() follows immediately — REVIEW-INDEXER-RESTART-REPLAY).
+  const inflightIngests = new Set<Promise<void>>();
+  function trackIngest(promise: Promise<void>): void {
+    inflightIngests.add(promise);
+    void promise.finally(() => inflightIngests.delete(promise));
+  }
+
+  // Per-process slot → block-time clock (REQ-K-1): fills carry the block time
+  // of the slot that first delivered them; the clock's cache dedupes the RPC
+  // fetches, so a fill batch that shares a slot costs one `getBlockTime`.
+  const clock = createSlotClock({
+    getBlockTime: (slot) => opts.connection.getBlockTime(slot),
+    now: Date.now,
+  });
 
   /**
    * 1 + the highest `funding_events.seq` already persisted. The store's seq PK
@@ -98,12 +120,16 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     return Number(row?.max ?? 0) + 1;
   }
 
-  /** Fold one decoded account payload into the derived history and persist it. */
-  function foldDerived(kind: AccountKind, data: Buffer, slot: number, pubkeyB58: string): void {
+  /**
+   * Fold one decoded account payload into the derived history and persist it.
+   * Returns the fills this delivery newly folded (ascending by seq) — the
+   * caller resolves their block times before inserting (REQ-K-1).
+   */
+  function foldDerived(kind: AccountKind, data: Buffer, slot: number, pubkeyB58: string): FillRow[] {
     foldState ??= createIndexerFoldState(persistedFundingFloor());
     if (kind === "order_book") {
       const book = decodeOrderBook(data);
-      if (book === null) return;
+      if (book === null) return [];
       const result = foldIndexerEvents(foldState, {
         kind: "order_book",
         market: book.market.toBase58(),
@@ -112,10 +138,10 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         events: book.events,
       });
       foldState = result.state;
-      for (const fill of result.fills) insertIgnoreDuplicate(fill);
+      return result.fills;
     } else if (kind === "market") {
       const market = decodePerpMarket(data);
-      if (market === null) return;
+      if (market === null) return [];
       const result = foldIndexerEvents(foldState, {
         kind: "market",
         market: pubkeyB58,
@@ -126,14 +152,18 @@ export function createIndexer(opts: IndexerOptions): Indexer {
       foldState = result.state;
       for (const row of result.fundingEvents) insertIgnoreDuplicateFunding(row);
     }
+    return [];
   }
 
-  function insertIgnoreDuplicate(fill: FillRow): void {
+  /** Insert one folded fill; `false` when the seq was already persisted (no-op). */
+  function insertIgnoreDuplicate(fill: FillRow): boolean {
     try {
       opts.db.insertFill(fill);
+      return true;
     } catch {
       // Already folded in an earlier process lifetime (fresh fold state after a
       // restart re-delivers the ring baseline) — the seq PK makes it a no-op.
+      return false;
     }
   }
 
@@ -145,12 +175,28 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     }
   }
 
-  /** Upsert one raw account and derive its history. */
-  function ingest(kind: AccountKind, pubkey: PublicKey, data: Buffer, slot: number): void {
+  /**
+   * Upsert one raw account, derive its history, and emit the update event.
+   * Every newly folded fill gets its slot's block time resolved (REQ-K-1,
+   * cached per slot) BEFORE the insert; only fills whose row insert actually
+   * succeeded ride the update's `fills` (REQ-K-4 — resync re-deliveries of
+   * already-persisted fills must not push).
+   */
+  async function ingest(kind: AccountKind, pubkey: PublicKey, data: Buffer, slot: number): Promise<void> {
     opts.db.upsertAccount(kind, pubkey.toBase58(), data, slot);
     if (lastIndexedSlot === null || slot > lastIndexedSlot) lastIndexedSlot = slot;
-    foldDerived(kind, data, slot, pubkey.toBase58());
-    opts.onUpdate?.({ kind, pubkey: pubkey.toBase58(), slot });
+    const folded = foldDerived(kind, data, slot, pubkey.toBase58());
+    const newlyInserted: FillRow[] = [];
+    for (const fill of folded) {
+      const row: FillRow = { ...fill, timeMs: await clock.timeForSlot(fill.slot) };
+      if (insertIgnoreDuplicate(row)) newlyInserted.push(row);
+    }
+    opts.onUpdate?.({
+      kind,
+      pubkey: pubkey.toBase58(),
+      slot,
+      fills: newlyInserted.length > 0 ? newlyInserted : undefined,
+    });
   }
 
   async function resync(): Promise<void> {
@@ -161,7 +207,7 @@ export function createIndexer(opts: IndexerOptions): Indexer {
     for (const { pubkey, account } of accounts) {
       const kind = kindFor(account.data);
       if (kind === null) continue;
-      ingest(kind, pubkey, account.data, slot);
+      await ingest(kind, pubkey, account.data, slot);
     }
     if (lastIndexedSlot === null || slot > lastIndexedSlot) lastIndexedSlot = slot;
   }
@@ -175,13 +221,15 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         subscriptionId = opts.connection.onProgramAccountChange(
           opts.programId,
           (keyed: KeyedAccountInfo, context: Context) => {
-            try {
-              const kind = kindFor(keyed.accountInfo.data);
-              if (kind === null) return;
-              ingest(kind, keyed.accountId, keyed.accountInfo.data, context.slot);
-            } catch (err) {
-              console.error(`fructus-server: indexer update failed: ${describe(err)}`);
-            }
+            const kind = kindFor(keyed.accountInfo.data);
+            if (kind === null) return;
+            trackIngest(
+              ingest(kind, keyed.accountId, keyed.accountInfo.data, context.slot).catch(
+                (err: unknown) => {
+                  console.error(`fructus-server: indexer update failed: ${describe(err)}`);
+                },
+              ),
+            );
           },
           "confirmed",
         );
@@ -210,6 +258,11 @@ export function createIndexer(opts: IndexerOptions): Indexer {
         resyncTimer = null;
       }
       started = false;
+      // Drain in-flight subscription ingests: fire-and-forget on the hot path,
+      // but stop() must be deterministic — everything the callbacks delivered
+      // before the unsubscribe has landed in the store (and emitted its
+      // update) once stop() resolves.
+      await Promise.allSettled([...inflightIngests]);
     },
 
     async resync(): Promise<void> {

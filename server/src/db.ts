@@ -137,6 +137,7 @@ function toAccountRow(kind: AccountKind, row: Record<string, unknown>): AccountR
 }
 
 function toFillRow(row: Record<string, unknown>): FillRow {
+  const blockTime = row.block_time_ms;
   return {
     seq: row.seq as number,
     slot: row.slot as number,
@@ -145,6 +146,7 @@ function toFillRow(row: Record<string, unknown>): FillRow {
     side: row.side as number,
     price: row.price as string,
     size: row.size as string,
+    timeMs: blockTime === null || blockTime === undefined ? null : (blockTime as number),
   };
 }
 
@@ -241,6 +243,14 @@ export function openDb(path: string): Db {
     );
   `);
 
+  // product-v3 REQ-K-1: stores deployed before v3 carry the 7-column fills
+  // table — add `block_time_ms` in place. Idempotent (column check first), so
+  // every open of a fresh or already-migrated store is a no-op.
+  const fillColumns = db.prepare("PRAGMA table_info(fills)").all() as Array<{ name: string }>;
+  if (!fillColumns.some((column) => column.name === "block_time_ms")) {
+    db.exec("ALTER TABLE fills ADD COLUMN block_time_ms INTEGER;");
+  }
+
   // Named binding (not `this`) so the helpers stay callable when destructured.
   const api: Db = {
     raw: db,
@@ -268,8 +278,8 @@ export function openDb(path: string): Db {
 
     insertFill(fill) {
       db.prepare(
-        "INSERT INTO fills (seq, slot, market, owner, side, price, size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(fill.seq, fill.slot, fill.market, fill.owner, fill.side, fill.price, fill.size);
+        "INSERT INTO fills (seq, slot, market, owner, side, price, size, block_time_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(fill.seq, fill.slot, fill.market, fill.owner, fill.side, fill.price, fill.size, fill.timeMs ?? null);
     },
 
     listFills(opts = {}) {
@@ -286,7 +296,7 @@ export function openDb(path: string): Db {
       params.push(opts.limit ?? 1_000);
       return db
         .prepare(
-          `SELECT seq, slot, market, owner, side, price, size FROM fills
+          `SELECT seq, slot, market, owner, side, price, size, block_time_ms FROM fills
            ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
            ORDER BY seq ASC LIMIT ?`,
         )
@@ -294,19 +304,32 @@ export function openDb(path: string): Db {
         .map((row) => toFillRow(row));
     },
 
-    listFillsSince() {
-      // Stub (product-v3 freeze): implemented in the K-line wave.
-      return [];
+    listFillsSince(market, minTimeMs, limit = 100_000) {
+      return db
+        .prepare(
+          `SELECT seq, slot, market, owner, side, price, size, block_time_ms FROM fills
+           WHERE market = ? AND block_time_ms IS NOT NULL AND block_time_ms >= ?
+           ORDER BY seq ASC LIMIT ?`,
+        )
+        .all(market, minTimeMs, limit)
+        .map((row) => toFillRow(row));
     },
 
-    listRecentFills() {
-      // Stub (product-v3 freeze): implemented in the K-line wave.
-      return [];
+    listRecentFills(market, limit) {
+      return db
+        .prepare(
+          `SELECT seq, slot, market, owner, side, price, size, block_time_ms FROM fills
+           WHERE market = ? ORDER BY seq DESC LIMIT ?`,
+        )
+        .all(market, limit)
+        .map((row) => toFillRow(row));
     },
 
-    latestFillTimeMs() {
-      // Stub (product-v3 freeze): implemented in the K-line wave.
-      return null;
+    latestFillTimeMs(market) {
+      const row = db
+        .prepare("SELECT MAX(block_time_ms) AS max_time FROM fills WHERE market = ?")
+        .get(market) as { max_time: number | null } | undefined;
+      return row?.max_time ?? null;
     },
 
     insertFundingEvent(row) {
