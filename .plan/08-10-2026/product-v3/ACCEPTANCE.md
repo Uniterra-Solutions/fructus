@@ -10,12 +10,14 @@ inspects) or it is nothing. The REQ set below EQUALS the REQ set of `PRD.md`.
 
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: implement
-- Freeze sha: `8b1eee2b4465ae636840b296c35d4f0a4fc519d0`; amendment `d1d0e7543223f7d93ab4e61f32a369bd32d5213f` (adds the missing account-panel red test — audit catch)
-- Shards: wave 1 dispatched — S1 server-data · S2 server-runtime · S3 fe-core · S5a fe-ui · S6 scripts; wave 2 — S4 fe-infra (its chart fold needs S3's real `applyTradeToCandles`); kline-e2e = main-agent integration gate
+- Phase: implement — complete and verified; live-stack A-items next, then the review phase
+- Freeze sha: `8b1eee2b4465ae636840b296c35d4f0a4fc519d0`; amendments: `d1d0e754…` (missing account-panel red test) · `756f208` (trade-gate:134 + review-server-interaction:313, both with quoted measurements)
+- Shards: S1 server-data ✓ · S2 server-runtime ✓ · S3 fe-core ✓ · S4 fe-infra ✓ · S5a fe-ui ✓ · S6 scripts ✓ — every shard command re-run green by the main agent; the kline-e2e integration gate ✓
+- Verdicts (main agent): server full suite 115/115 (serial) · frontend 17/17 + tsc + build ✓ · scripts 4/4 + tsc ✓ · sdk 86/86 ✓ (collateral) — implement commits `f16ba69` · `dd5b028` · `255a4af` · `6311e20` · `756f208`
+- Integration fixes (measured): indexer `stop()` drains in-flight subscription ingests (full-suite catch — REVIEW-INDEXER-RESTART-REPLAY); trade-gate (c) fills a valid size before the enabled assert; review-server-interaction's tick vocabulary gains one `settle_fill` (K-5 landing); keeper.test.ts untouched — the predicted supersession did NOT materialize (measured green)
 - Open findings: none
 - Holds / waivers: none
-- Next action: wave-1 implement shards (one writer per file; each runs only its own test files); main agent re-runs every shard command, then integrates (kline-e2e, store/App wiring, docs + CI, browser walkthrough) and runs the full server-suite verdict.
+- Next action: A-items on the live stack (devstack + server + MM bot + frontend; A-V-1/A-M-1/A-F-1/A-F-2), then the review phase (fresh reviewers vs plan + diff).
 
 ## Run commands (each executed once before being written here)
 
