@@ -251,7 +251,8 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.package }}
         run: npm test --if-present
-      # `scripts/` has no test script: its check is the offline e2e dry run
+      # `scripts/` tests are the frozen MM/devstack suites (run by `npm test`
+      # above); the offline e2e dry run stays as the package's smoke check
       # (no RPC, no keypair — the network walk is gated behind RUN_E2E).
       - name: Offline e2e dry run
         if: matrix.package == 'scripts'
@@ -302,6 +303,39 @@ jobs:
         working-directory: server
         # One file at a time: the suites flake when the runner parallelizes them.
         run: npx tsx --test --test-force-exit --test-concurrency=1 test/*.test.ts
+
+  # -------------------------------------------------------- frontend (v3) -----
+  # Product-v3 trading terminal: vitest (jsdom) suites + typecheck + the vite
+  # build. The package imports the SDK's sources — install the sdk deps first
+  # (same resolution rationale as the `server` job).
+  frontend:
+    name: frontend · trading terminal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            sdk/package-lock.json
+      - name: Install the SDK
+        working-directory: sdk
+        run: npm ci
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Type-check
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Test
+        working-directory: frontend
+        run: npm test
+      - name: Build
+        working-directory: frontend
+        run: npm run build
 
   # ------------------------------------------------------------- e2e (SVM) ----
   integration:

@@ -1,8 +1,8 @@
 # API (HTTP + WebSocket surface)
 
-**Purpose:** the off-chain `server/` surface (product-v2, REQ-B-7): SIWS wallet
-login, the operator **bind** relay, portfolio and market reads, the
-`/actions/*` write routes, the devnet faucet, health, and the WebSocket push
+**Purpose:** the off-chain `server/` surface (product-v2 REQ-B-7 plus the product-v3
+K-line reads): SIWS wallet login, the operator **bind** relay, portfolio and market reads,
+the `/actions/*` write routes, the devnet faucet, health, and the WebSocket push
 channel. The route table below is the contract — it mirrors
 [`api/openapi.json`](api/openapi.json) and the server's exported `ROUTES`.
 
@@ -32,6 +32,8 @@ payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
 | `GET` | `/me/history` | JWT | Indexed fills + funding rows in seq order |
 | `GET` | `/market` | public | Market snapshot: `mark`, `index`, `fundingAccumulator`, `bestBid`, `bestAsk` |
 | `GET` | `/market/book` | public | L2 book levels `[price, size]`, best first |
+| `GET` | `/market/candles` | public | OHLCV candles from indexed fills: `interval` required (`1m`/`5m`/`15m`/`1h`/`4h`/`1d`), `limit` 1..1000 (default 300); ascending, compact; `400` on bad params |
+| `GET` | `/market/trades` | public | Recent market trades (fills), descending by seq: `limit` 1..200 (default 50); `timeMs` is null only for pre-migration rows |
 | `POST` | `/actions/deposit` | JWT | Build/submit a deposit action (`{amount}`) |
 | `POST` | `/actions/withdraw` | JWT | Build/submit a withdrawal action (`{amount}`) |
 | `POST` | `/actions/orders` | JWT | Place a limit or market order (`{kind, side, size, price?}`) |
@@ -48,6 +50,12 @@ action has been submitted and confirmed on chain. A rejected or failed action
 surfaces through the error envelope (`{ok: false, error: {...}}`) instead; the
 wallet receives the `tx` WebSocket push with the same confirmed
 `ActionResponse` when the action lands (see [api/ws.md](api/ws.md)).
+
+The product-v3 K-line reads: `/market/candles` buckets every timed fill by
+`bucket = floor(timeMs / intervalMs) × intervalMs` — only non-empty buckets are
+served, ascending, at most `limit` of them, with the window ending at the
+latest timed fill's bucket; fills without a block time are excluded. It is the
+chart source for the terminal. `/market/trades` is the tape source.
 
 ## SIWS login flow
 
@@ -107,8 +115,8 @@ Caps: per-wallet **10,000 tUSDC / 24 h** plus a global `FAUCET_GLOBAL_CAP` /
 ## WebSocket
 
 `GET /ws?token=<session JWT>` upgrades to the push channel; a missing, invalid
-or expired token closes the socket with code **4401**. The four push message
-types (`book`, `mark`, `user`, `tx`) are documented in
+or expired token closes the socket with code **4401**. The five push message
+types (`book`, `mark`, `user`, `tx`, `trade`) are documented in
 [api/ws.md](api/ws.md).
 
 ## Health

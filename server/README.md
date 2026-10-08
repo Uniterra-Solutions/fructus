@@ -4,14 +4,15 @@ Backend service for product-v2 (PRD REQ-B-1..B-10, D11–D16): chain indexer, st
 auth, operator relay, keeper, REST + WebSocket API. One process, `node:http` + `ws`, SQLite via
 `node:sqlite`.
 
-> **Status: live.** All 16 routes of the REQ-B-7 contract are implemented in `src/api.ts`
-> (`ROUTES`, mirroring `docs/api/openapi.json`): the SIWS auth pair, the wallet-signed bind pair
-> (`/bind/prepare` returns the unsigned `[approve, set_operator]` transaction; `/bind/confirm`
-> verifies the landed tx and the on-chain `Operator` record), the public reads (`/market`,
-> `/market/book`), the faucet and `/healthz`, plus the JWT-gated private set — `/me`,
-> `/me/positions`, `/me/history` and the five `/actions/*` answer 401 without a valid session.
-> The e2e suite walks the whole product flow against a hermetic `solana-test-validator`
-> (see Checks).
+> **Status: live.** The REQ-B-7 contract's 16 routes are implemented in `src/api.ts`
+> (`ROUTES`, mirroring `docs/api/openapi.json`) — plus the product-v3 market-data pair
+> `GET /market/candles` + `GET /market/trades` (18 total): the SIWS auth pair, the
+> wallet-signed bind pair (`/bind/prepare` returns the unsigned `[approve, set_operator]`
+> transaction; `/bind/confirm` verifies the landed tx and the on-chain `Operator`
+> record), the public reads (`/market`, `/market/book`, candles/trades), the faucet and
+> `/healthz`, plus the JWT-gated private set — `/me`, `/me/positions`, `/me/history` and
+> the five `/actions/*` answer 401 without a valid session. The e2e suite walks the whole
+> product flow against a hermetic `solana-test-validator` (see Checks).
 
 ## Layout
 
@@ -23,7 +24,9 @@ auth, operator relay, keeper, REST + WebSocket API. One process, `node:http` + `
 | `src/state.ts` | portfolio / market / book read models (DTOs from `fructus-sdk`) |
 | `src/auth.ts` | SIWS challenge + ed25519 verify + HS256 JWT sessions (REQ-B-4) |
 | `src/operator.ts` | per-user FIFO action queue, SDK operator builders, `tx_log` (REQ-B-5) |
-| `src/keeper.ts` | interval loop: crank → settle funding → settle close → liquidate (REQ-B-6) |
+| `src/keeper.ts` | interval loop: crank → settle fill → settle funding → settle close → liquidate (REQ-B-6 + the product-v3 sweep) |
+| `src/market-data.ts` | candles/trades query parsing + OHLCV aggregation (product-v3) |
+| `src/timestamps.ts` | per-slot `getBlockTime` cache feeding `fills.block_time_ms` (product-v3) |
 | `src/api.ts` | REST routes table + `node:http` server (REQ-B-7) |
 | `src/ws.ts` | `/ws?token=…` push socket; bad token ⇒ close 4401 |
 | `src/faucet.ts` | devnet tUSDC mint with 24 h caps (D15) |
@@ -72,8 +75,10 @@ npm run typecheck           # tsc --noEmit
 npm test                    # tsx --test --test-force-exit test/*.test.ts
 ```
 
-`test/` carries the nine `*.test.ts` suites (`api`, `auth`, `e2e`, `faucet`, `indexer`, `keeper`,
-`operator`, `state`, `ws`) plus the shared `harness.ts`. Run the whole set sequentially — the
+`test/` carries the nine v2 `*.test.ts` suites (`api`, `auth`, `e2e`, `faucet`, `indexer`,
+`keeper`, `operator`, `state`, `ws`) plus the product-v3 set (`fill-time`, `candles`,
+`market-trades`, `kline-e2e`, `ws-trade`, `keeper-settle`) and the shared `harness.ts`.
+Run the whole set sequentially — the
 parallel `node:test` default is a known flake here (the validator-backed suites each spawn their
 own validator), so CI pins the concurrency:
 
@@ -87,11 +92,17 @@ npx tsx --test --test-force-exit --test-concurrency=1 test/*.test.ts   # ci.yml 
   only the operator service touches the hot key (`OPERATOR_KEYPAIR`, R-3, never logged). Every
   attempt lands in `tx_log` and is pushed to the actor's socket as a `tx` message. Unset key ⇒
   `/actions/*` and `/bind/prepare` answer 501 `operator_unconfigured`.
-- **Keeper**: `tick()` is one bounded pass — crank → settle funding → settle close →
-  account-level liquidation (one full close per under-margin account); the interval loop
+- **Keeper**: `tick()` is one bounded pass — crank → settle fill (product-v3: settles up to 32
+  pending maker fills from the write window per tick, operator key as settler, failures logged
+  and retried next tick) → settle funding → settle close → account-level liquidation (one full
+  close per under-margin account); the interval loop
   (`KEEPER_INTERVAL_MS`) shares one in-flight pass across overlapping firings, and a failing
   sweep is recorded — never rejecting the tick. The keeper reuses the operator hot key
   (Stage-1 R-3); third-party liquidation stays permissionless (D16).
+- **Fill timestamps**: every newly indexed fill resolves `block_time_ms` via `getBlockTime`
+  through a per-slot cache (≤1024 entries; null/error → ingestion wall-clock); the `fills`
+  table gains the column through an idempotent `openDb` migration; only pre-migration rows
+  stay NULL (product-v3, candles source).
 - **Faucet**: requests are serialized; an accepted call mints exactly one `FAUCET_DRIP` into the
   wallet's ATA and is counted against the 24 h budgets only after the tx lands (over-cap ⇒ 429,
   no on-chain effect; disabled ⇒ 404 `faucet_disabled`).

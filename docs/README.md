@@ -19,6 +19,7 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 | Understand the system design | [architecture.md](architecture.md) |
 | See the on-chain instruction surface | [api-reference.md](api-reference.md) |
 | Call the HTTP + WebSocket API (server) | [api.md](api.md) |
+| Run the trading terminal (frontend) | [../frontend/README.md](../frontend/README.md) |
 | Understand operator delegation | [modules/operator.md](modules/operator.md) |
 | See account/field layouts | [data-models.md](data-models.md) |
 | Understand the mark-price oracle | [modules/oracle.md](modules/oracle.md) |
@@ -54,6 +55,7 @@ trustless settlement reference, off-chain keeper, and fuzz harness) and the
 - [api-reference.md](api-reference.md) — instruction reference + signature scheme
 - [api.md](api.md) — HTTP + WebSocket API surface (server)
 - [api/ws.md](api/ws.md) — WebSocket push message types
+- [../frontend/README.md](../frontend/README.md) — product-v3 trading terminal (run + demo walkthrough)
 - [data-models.md](data-models.md) — account + derived-rate layouts
 - [setup.md](setup.md) — getting started
 - [testing.md](testing.md) — test strategy + commands

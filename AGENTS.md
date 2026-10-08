@@ -36,9 +36,20 @@
 - `cd scripts && npm run setup` — self-contained devnet bootstrap: wallets +
   airdrop SOL + self-owned collateral mint + own SPL stake pool (`INDEX_SOURCE`),
   then validate + print the e2e env (`--preflight` = check only)
+- `cd scripts && npm run devstack` — one-command LOCAL stack: `solana-test-validator` +
+  market/book/vault init + collateral mint + funded operator/MM keys; prints
+  copy-paste env blocks for the server and the MM bot (runs until SIGINT)
+- `cd scripts && npm run mm` — market-maker bot against the devstack (needs
+  `RPC_URL` + `MM_KEYPAIR` from the devstack output)
 - `cd integration && npm test` — SDK/CLI -> protocol integration PBT: drives the
   real program (solana-test-validator + SDK builders) and asserts on-chain
   invariants (`--test-force-exit`)
+- `cd server && npm test` — product-v2 backend suites (`api`, `auth`, `indexer`,
+  `keeper`, `ws`, …) plus the product-v3 set (`fill-time`, `candles`,
+  `market-trades`, `kline-e2e`, `ws-trade`, `keeper-settle`); validator-backed —
+  run sequentially (`--test-concurrency=1`, as CI does)
+- `cd frontend && npm test` — product-v3 trading terminal suite (vitest + jsdom);
+  `npm run typecheck` and `npm run build` sit beside it
 - `cd trident-tests && cargo run --bin fuzz_0` — on-chain stateful fuzz smoke run
   (1000 iterations × 100 flows; needs its SBPFv0 artifact at `target/deploy-v0` —
   `--bin market` still aborts at start-up; docs/testing.md has the build command)
@@ -56,9 +67,11 @@
 - **Framework**: anchor-lang 1.2.0 / anchor-spl 1.2.0
 - **Solana crates**: `solana-sdk-ids` 3.1, `solana-instructions-sysvar` 3.0, `sha2` 0.11,
   `bytemuck` 1.17 (zero-copy accounts)
-- **npm deps (publisher/sdk/cli/scripts)**: `@solana/web3.js` ^1.95, `tsx`
+- **npm deps (publisher/sdk/cli/scripts/server/frontend)**: `@solana/web3.js` ^1.95, `tsx`;
+  frontend: React 19 + Vite + Tailwind v4 + `lightweight-charts` v5
 - **Testing**: `proptest` 1, `solana-instruction` 3.0 (dev), `solana-program-test` 3.1 (dev), Trident 0.12
-- **Package managers**: cargo (root + `trident-tests/`) and npm (`publisher/`, `sdk/`, `cli/`, `scripts/`)
+- **Package managers**: cargo (root + `trident-tests/`) and npm (`publisher/`, `sdk/`, `cli/`,
+  `scripts/`, `server/`, `frontend/`)
 
 ## Project Structure
 
@@ -71,7 +84,12 @@
 - `publisher/` — off-chain TypeScript APY keeper (fetch → sign → submit)
 - `sdk/` — trader TypeScript SDK (instruction builders, typed account decoders, funding/PnL mirrors)
 - `cli/` — trader CLI over the SDK (open/close/deposit/withdraw/position/funding/mark/index)
-- `scripts/` — devnet deploy + e2e lifecycle (`deploy.sh`, `e2e.mts`), `Anchor.toml` devnet profile
+- `server/` — product-v2 backend: indexer, state, SIWS auth, operator relay, keeper (incl. the
+  product-v3 settle-fill sweep), REST + WS API (product-v3: candles/trades reads + `trade` push)
+- `frontend/` — product-v3 trading terminal: Vite + React + TS + Tailwind (dark theme, bilingual,
+  lightweight-charts v5) — see [frontend/README.md](frontend/README.md)
+- `scripts/` — devnet deploy + e2e lifecycle (`deploy.sh`, `e2e.mts`), local devstack + MM bot
+  (`devstack.mts`, `mm-bot.mts`/`mm-lib.mts`), `Anchor.toml` devnet profile
 - `trident-tests/` — fuzz harness (separate cargo workspace)
 - `docs/` — documentation hub ([docs/README.md](docs/README.md))
 - `target/`, `*/node_modules`, `*/dist/`, `.review/` — build/review artifacts (gitignored)

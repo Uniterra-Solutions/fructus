@@ -13,7 +13,7 @@ JSON objects discriminated by their `type` field.
   token closes the socket immediately with WebSocket close code **4401**
   (`WS_UNAUTHORIZED`); no push traffic is sent before authentication.
 - **Payloads**: one JSON object per message. The `type` discriminator takes
-  exactly four values — `'book'`, `'mark'`, `'user'`, `'tx'`:
+  exactly five values — `'book'`, `'mark'`, `'user'`, `'tx'`, `'trade'`:
 
 | Type | Payload | When |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ JSON objects discriminated by their `type` field.
 | `'mark'` | `{ type: 'mark', market: string, mark: MarketView }` | The mark/index snapshot moved (`mark`, `index`, `fundingAccumulator`, `bestBid`, `bestAsk`) |
 | `'user'` | `{ type: 'user', portfolio: UserPortfolio }` | The wallet's portfolio **changed** — a signed delta vs. the state at connect / its last push (positions only for the sides that moved; `health`/`operator` current-state) — see [Portfolio deltas](#portfolio-deltas-user) |
 | `'tx'` | `{ type: 'tx', action: ActionResponse }` | An `/actions/*` action **confirmed** on chain (`{actionId, signature, status: 'confirmed'}`) |
+| `'trade'` | `{ type: 'trade', market: string, trade: TradeView }` | A **newly indexed fill** — one message per fill, ascending seq (product-v3) |
 
 The DTO types are the shared types from `sdk/src/api.ts` (`BookView`,
 `MarketView`, `UserPortfolio`, `ActionResponse`), pushed without an envelope —
@@ -33,6 +34,7 @@ below).
 { "type": "mark", "market": "<market pubkey>", "mark": { "mark": null, "index": "...", "fundingAccumulator": "...", "bestBid": null, "bestAsk": null } }
 { "type": "user", "portfolio": { "wallet": "...", "deposited": "...", "reserved": "...", "claimable": "...", "free": "...", "equity": "...", "requirementInitial": "...", "requirementMaint": "...", "health": "healthy", "operator": null, "positions": [] } }
 { "type": "tx", "action": { "actionId": "...", "status": "confirmed" } }
+{ "type": "trade", "market": "<market pubkey>", "trade": { "seq": "12", "slot": "4300", "timeMs": "1700000000123", "owner": "<maker pubkey>", "side": 0, "price": "100001", "size": "2000000" } }
 ```
 
 ## Portfolio deltas (`user`)
@@ -62,5 +64,7 @@ that. Apply each `user` message to the state you last held; the REST reads
 - Numeric fields are **decimal strings** of raw base units, exactly as in the
   REST payloads (`sdk/src/api.ts` is the single source of truth); in the
   `user` deltas they are signed where a field can decrease (`"-25000000"`).
+- `trade` messages are one per newly indexed fill (ascending seq); a resync
+  re-delivery of an already-persisted fill is never re-pushed.
 - `null` means "not available yet" (no two-sided book, no operator record).
 - The channel is push-only: the client does not send application messages.
