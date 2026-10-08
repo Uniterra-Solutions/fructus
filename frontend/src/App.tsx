@@ -79,6 +79,26 @@ function describe(e: unknown): string {
   return String(e);
 }
 
+/**
+ * Proxy-safe confirmation: poll `getSignatureStatuses` over HTTP. The legacy
+ * `connection.confirmTransaction(sig, commitment)` opens a WebSocket
+ * subscription (`ws://<same-origin>/rpc`), which the dev reverse proxy does not
+ * upgrade — the promise then hangs forever (measured: tx landed, client stuck).
+ */
+async function confirmSignature(connection: Connection, signature: string, timeoutMs = 90_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { value } = await connection.getSignatureStatuses([signature]);
+    const status = value[0];
+    if (status !== null && status !== undefined) {
+      if (status.err) throw new Error(`transaction failed: ${JSON.stringify(status.err)}`);
+      if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") return;
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out confirming ${signature.slice(0, 16)}…`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+}
+
 interface ActiveSigner {
   publicKey: PublicKey;
   signMessage(message: Uint8Array): Promise<Uint8Array>;
@@ -273,7 +293,7 @@ function Terminal() {
       const transaction = await signer.signTransaction(Transaction.from(b64ToBytes(prepared.transaction)));
       const raw = new Uint8Array(transaction.serialize());
       const signature = await connection.sendRawTransaction(raw, { skipPreflight: false });
-      await connection.confirmTransaction(signature, "confirmed");
+      await confirmSignature(connection, signature);
       const result = await api.bindConfirm(bytesToB64(raw), signature);
       if (result.status === "bound" && result.operator) {
         const operator = result.operator;
@@ -298,7 +318,7 @@ function Terminal() {
       if (demoRef.current && signer.publicKey.equals(demoRef.current.publicKey)) {
         try {
           const airdrop = await connection.requestAirdrop(signer.publicKey, LAMPORTS_PER_SOL);
-          await connection.confirmTransaction(airdrop, "confirmed");
+          await confirmSignature(connection, airdrop, 30_000);
         } catch {
           /* devnet: no free airdrop — the account needs SOL from elsewhere */
         }
@@ -386,6 +406,11 @@ function Terminal() {
     [api, store],
   );
 
+  const fetchChartCandles = useCallback(
+    (interval: CandleInterval) => api.candles(interval).then((response) => response.candles),
+    [api],
+  );
+
   return (
     <Shell
       auth={state.auth}
@@ -396,6 +421,7 @@ function Terminal() {
       portfolio={state.portfolio}
       interval={state.interval}
       status={status}
+      chartFetchCandles={fetchChartCandles}
       actions={{
         connect,
         disconnect,

@@ -43,6 +43,8 @@ export interface ShellProps {
   interval: CandleInterval;
   status: string | null;
   actions: ShellActions;
+  /** Optional: mounts the live lightweight-charts controller in the chart panel. */
+  chartFetchCandles?: (interval: CandleInterval) => Promise<CandleView[]>;
 }
 
 /** Trading controls are enabled only when the wallet is authed AND the operator is bound (REQ-F-2 gate). */
@@ -51,7 +53,7 @@ export function tradingEnabled(auth: AuthState): boolean {
 }
 
 export function Shell(props: ShellProps) {
-  const { auth, market, book, candles, trades, portfolio, interval, status, actions } = props;
+  const { auth, market, book, candles, trades, portfolio, interval, status, actions, chartFetchCandles } = props;
   const { t } = useLocale();
   const [prefill, setPrefill] = useState<{ price: string; side: 0 | 1 } | null>(null);
 
@@ -80,7 +82,13 @@ export function Shell(props: ShellProps) {
       ) : null}
       <main className="grid flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_360px]">
         <div className="flex min-w-0 flex-col gap-3">
-          <ChartPanel candles={candles} interval={interval} onIntervalChange={actions.setInterval} />
+          <ChartPanel
+            candles={candles}
+            interval={interval}
+            onIntervalChange={actions.setInterval}
+            fetchCandles={chartFetchCandles}
+            market={market}
+          />
           <TradesTape trades={trades} />
         </div>
         <OrderBookPanel book={book} onPriceSelect={(price: string, side: 0 | 1) => setPrefill({ price, side })} />

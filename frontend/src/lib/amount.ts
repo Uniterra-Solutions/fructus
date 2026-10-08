@@ -22,7 +22,11 @@ export function parseAmount(input: string, dp = 6): string | null {
 
   const whole = match[1];
   const fraction = match[2] ?? "";
-  const raw = fraction.length === 0 ? BigInt(whole) : BigInt(whole + fraction.padEnd(dp, "0"));
+  // Scale BOTH paths: an integer-only input ("100") is 100 × 10^dp raw, exactly
+  // like a fractional one (the whole part shifts left by `dp` digits); the
+  // pre-fix integer branch returned the unscaled whole (live counterexample:
+  // parseAmount("100") === "100" — a deposit of 100 landed as 0.0001).
+  const raw = BigInt(whole + fraction.padEnd(dp, "0"));
   if (raw > U64_MAX) return null;
   return raw.toString();
 }

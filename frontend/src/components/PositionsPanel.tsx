@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { UserPortfolio } from "fructus-sdk/src/api.js";
-import { formatAmount, parseAmount } from "../lib/amount.js";
+import { formatAmount } from "../lib/amount.js";
 import { useLocale } from "../i18n/index.js";
 
 export interface PositionsPanelProps {
@@ -11,13 +11,29 @@ export interface PositionsPanelProps {
   onClose(side: 0 | 1, size: string): void;
 }
 
+/** u64 ceiling — close sizes are raw base units, validated as such. */
+const U64_MAX = (1n << 64n) - 1n;
+
+/**
+ * The close editor speaks RAW base units (default = the full raw notional —
+ * CLOSE-BODY-AND-DEFAULT-SIZE pins input "2500000" → body "2500000"), so it
+ * validates digits-only and passes the canonical raw string through; it must
+ * NOT re-scale through the human-amount parser.
+ */
+function rawSize(text: string): string | null {
+  if (!/^\d+$/.test(text)) return null;
+  const value = BigInt(text);
+  if (value <= 0n || value > U64_MAX) return null;
+  return value.toString();
+}
+
 export function PositionsPanel({ portfolio, disabled, onClose }: PositionsPanelProps) {
   const { t } = useLocale();
   const [closing, setClosing] = useState<{ side: 0 | 1; text: string } | null>(null);
   const positions = portfolio !== null ? portfolio.positions : [];
 
-  const closeRaw = closing !== null ? parseAmount(closing.text) : null;
-  const closeValid = closeRaw !== null && BigInt(closeRaw) > 0n;
+  const closeRaw = closing !== null ? rawSize(closing.text) : null;
+  const closeValid = closeRaw !== null;
 
   const confirmClose = (): void => {
     if (closing === null || !closeValid || closeRaw === null) return;

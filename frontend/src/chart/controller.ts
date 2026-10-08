@@ -85,6 +85,9 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
   let indexLine: IPriceLine | null = null;
 
   const chart = createChart(opts.container, {
+    // The container is a responsive flex/grid cell: autoSize installs the
+    // internal ResizeObserver so zoom/window changes re-fit the chart.
+    autoSize: true,
     layout: {
       background: { color: "transparent" },
       textColor: "#8b95a7",
