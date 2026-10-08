@@ -3,3 +3,5 @@ dist/
 deploy-output.json
 # Per-run solana CLI config (points at the local authority keypair + devnet).
 devnet-config.yml
+# Local devstack state (validator ledger + generated keys per run).
+.devstack/
