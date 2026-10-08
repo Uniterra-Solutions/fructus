@@ -4,7 +4,7 @@
 //! trading controls; a confirmed bind lifts the gate.
 
 import { afterEach, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { PositionView, UserPortfolio } from "fructus-sdk/src/api.js";
 import { Shell, tradingEnabled, type ShellActions } from "../src/components/Shell.js";
 import { LocaleProvider } from "../src/i18n/index.js";
@@ -128,6 +128,13 @@ it(`TRADE-GATED-UNTIL-BOUND: a connected but unbound wallet sees disabled tradin
 
   expect(screen.queryByTestId("bind-cta")).toBeNull();
 
+  // The gate lift is proven on the form's own terms: with the gate open AND a valid
+  // size the submit is enabled (an empty form stays validity-disabled by design —
+  // the state order-form.test.tsx:59 pins; the raw-empty render cannot be enabled).
+  const sizeInputBound = screen.queryByTestId("size-input");
+  expect(sizeInputBound).not.toBeNull();
+  if (!sizeInputBound) return;
+  fireEvent.change(sizeInputBound, { target: { value: "1" } });
   const submitBound = screen.queryByTestId("submit-order");
   expect(submitBound).not.toBeNull();
   if (!submitBound) return;

@@ -310,9 +310,14 @@ test("REVIEW-KEEPER-SELECTION: one liquidation per under-margin account per tick
       "a foreign-market position must never be targeted",
     );
     const txRows = db.raw.prepare("SELECT kind FROM tx_log ORDER BY rowid").all() as unknown as Array<{ kind: string }>;
+    // AMEND (K-5 landing, measured): the tick gains its settle-fill phase
+    // (D11) — with the scenario's one pending ring fill the sweep settles it
+    // in-tick, so `settle_fill` joins the bounded sweep vocabulary. Measured
+    // before the amendment: expected [crank, liquidate×2, settle_close,
+    // settle_funding×3]; actual adds exactly one `settle_fill`.
     assert.deepEqual(
       txRows.map((r) => r.kind).sort(),
-      ["crank", "liquidate", "liquidate", "settle_close", "settle_funding", "settle_funding", "settle_funding"].sort(),
+      ["crank", "liquidate", "liquidate", "settle_close", "settle_fill", "settle_funding", "settle_funding", "settle_funding"].sort(),
       "the tick's bounded sweep coverage",
     );
 
