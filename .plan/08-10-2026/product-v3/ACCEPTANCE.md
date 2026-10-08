@@ -10,12 +10,12 @@ inspects) or it is nothing. The REQ set below EQUALS the REQ set of `PRD.md`.
 
 ## Run state (main agent maintains — update at every phase boundary and commit wave; read this block FIRST after a compaction, a new session or a skill edit)
 
-- Phase: plan
-- Freeze sha: pending
-- Shards: — (the red suite is authored: server 6 files · frontend 13 files · scripts 2 files)
+- Phase: implement
+- Freeze sha: `8b1eee2b4465ae636840b296c35d4f0a4fc519d0`; amendment `d1d0e7543223f7d93ab4e61f32a369bd32d5213f` (adds the missing account-panel red test — audit catch)
+- Shards: wave 1 dispatched — S1 server-data · S2 server-runtime · S3 fe-core · S5a fe-ui · S6 scripts; wave 2 — S4 fe-infra (its chart fold needs S3's real `applyTradeToCandles`); kline-e2e = main-agent integration gate
 - Open findings: none
 - Holds / waivers: none
-- Next action: scaffold stubs with real signatures (server + frontend + scripts) → author red suite → run every row command once → collateral pass (server api + keeper suites; nothing else touched) → commit docs, then freeze commit (`test: product-v3 (red baseline)`) and record sha here.
+- Next action: wave-1 implement shards (one writer per file; each runs only its own test files); main agent re-runs every shard command, then integrates (kline-e2e, store/App wiring, docs + CI, browser walkthrough) and runs the full server-suite verdict.
 
 ## Run commands (each executed once before being written here)
 
