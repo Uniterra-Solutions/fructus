@@ -262,7 +262,7 @@ async function makeServer(opts: MakeServerOptions = {}): Promise<InProcessServer
     auth,
     operator,
     keeper: {
-      tick: async () => ({ cranked: 0, settledFunding: 0, settledClose: 0, liquidated: 0 }),
+      tick: async () => ({ cranked: 0, settledFills: 0, settledFunding: 0, settledClose: 0, liquidated: 0 }),
       start: () => undefined,
       stop: () => undefined,
     },

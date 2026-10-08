@@ -13,5 +13,5 @@
     "declaration": false,
     "types": ["node"]
   },
-  "include": ["e2e.mts", "selfcontained.mts"]
+  "include": ["e2e.mts", "selfcontained.mts", "mm-bot.mts", "mm-lib.mts", "devstack.mts", "test"]
 }

@@ -19,6 +19,12 @@ export interface IndexerUpdate {
   kind: AccountKind;
   pubkey: string;
   slot: number;
+  /**
+   * Fills persisted by this update (ascending by seq; product-v3 REQ-K-4 trade
+   * push). Absent/empty when the update carried no NEW fills (duplicates from
+   * a resync re-delivery never reach this field).
+   */
+  fills?: FillRow[];
 }
 
 export interface IndexerOptions {

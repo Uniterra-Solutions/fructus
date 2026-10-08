@@ -1,0 +1,34 @@
+/* Fructus terminal theme — dark tech tokens (REQ-F-1). */
+@import "tailwindcss";
+
+@theme {
+  --color-base: #05070b;
+  --color-panel: #0b1018;
+  --color-panel2: #0e1520;
+  --color-line: #1a2433;
+  --color-ink: #e6edf7;
+  --color-muted: #8b98a9;
+  --color-accent: #22d3ee;
+  --color-up: #34d399;
+  --color-down: #f87171;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

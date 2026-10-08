@@ -10,6 +10,9 @@
     "setup": "tsx selfcontained.mts",
     "setup:preflight": "tsx selfcontained.mts --preflight",
     "deploy": "bash deploy.sh",
+    "mm": "tsx mm-bot.mts",
+    "devstack": "tsx devstack.mts",
+    "test": "tsx --test --test-force-exit test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json"
   },

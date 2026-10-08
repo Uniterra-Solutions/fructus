@@ -16,11 +16,13 @@ import type {
   BindConfirmResponse,
   BindPrepareResponse,
   BookView,
+  CandlesResponse,
   HealthzResponse,
   HistoryEntry,
   HistoryResponse,
   MarketView,
   PositionsResponse,
+  TradesResponse,
   UserPortfolio,
 } from "fructus-sdk/src/api.js";
 import {
@@ -66,6 +68,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", path: "/me/history", private: true },
   { method: "GET", path: "/market", private: false },
   { method: "GET", path: "/market/book", private: false },
+  { method: "GET", path: "/market/candles", private: false },
+  { method: "GET", path: "/market/trades", private: false },
   { method: "POST", path: "/actions/deposit", private: true },
   { method: "POST", path: "/actions/withdraw", private: true },
   { method: "POST", path: "/actions/orders", private: true },
@@ -301,6 +305,19 @@ async function dispatch(deps: ApiServerDeps, req: IncomingMessage, res: ServerRe
     case "GET /market/book": {
       const data = await deps.getBook();
       sendJson(res, 200, { ok: true, data } satisfies ApiResponse<typeof data>);
+      return;
+    }
+
+    // product-v3 K-line surface — stubs until the K-line wave lands.
+    case "GET /market/candles": {
+      const data: CandlesResponse = { candles: [] };
+      sendJson(res, 200, { ok: true, data } satisfies ApiResponse<CandlesResponse>);
+      return;
+    }
+
+    case "GET /market/trades": {
+      const data: TradesResponse = { trades: [] };
+      sendJson(res, 200, { ok: true, data } satisfies ApiResponse<TradesResponse>);
       return;
     }
 

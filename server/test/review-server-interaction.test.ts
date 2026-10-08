@@ -662,7 +662,7 @@ async function startApiHarness(): Promise<ApiHarness> {
     queueDepth: () => 0,
   };
   const keeper: Keeper = {
-    tick: async () => ({ cranked: 0, settledFunding: 0, settledClose: 0, liquidated: 0 }),
+    tick: async () => ({ cranked: 0, settledFills: 0, settledFunding: 0, settledClose: 0, liquidated: 0 }),
     start() {},
     stop() {},
   };

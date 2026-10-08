@@ -45,6 +45,8 @@ import type { Db } from "./db.js";
 /** Per-tick phase counters. */
 export interface KeeperTickResult {
   cranked: number;
+  /** Maker fills booked by the settle-fill sweep (product-v3 REQ-K-5). */
+  settledFills: number;
   settledFunding: number;
   settledClose: number;
   liquidated: number;
@@ -273,7 +275,7 @@ export function createKeeper(opts: KeeperOptions): Keeper {
   }
 
   async function tick(): Promise<KeeperTickResult> {
-    const result: KeeperTickResult = { cranked: 0, settledFunding: 0, settledClose: 0, liquidated: 0 };
+    const result: KeeperTickResult = { cranked: 0, settledFills: 0, settledFunding: 0, settledClose: 0, liquidated: 0 };
     const kp = loadSigner();
     if (kp === null) return result;
     const state = await loadMarket();

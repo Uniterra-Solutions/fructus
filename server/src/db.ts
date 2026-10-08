@@ -38,6 +38,12 @@ export interface FillRow {
   /** Raw base units, decimal strings (u64). */
   price: string;
   size: string;
+  /**
+   * Block time of the fill's slot in ms (product-v3 REQ-K-1). `null`/absent
+   * only for rows persisted before the block_time_ms migration (those rows are
+   * excluded from candles and reported with `timeMs: null` on the tape).
+   */
+  timeMs?: number | null;
 }
 
 /** One funding-accumulator diff (REQ-B-2). */
@@ -87,6 +93,12 @@ export interface Db {
 
   insertFill(fill: FillRow): void;
   listFills(opts?: ListFillsOptions): FillRow[];
+  /** Fills of a market with `timeMs >= minTimeMs`, ascending by seq (product-v3 REQ-K-2). */
+  listFillsSince(market: string, minTimeMs: number, limit?: number): FillRow[];
+  /** The market's most recent fills, descending by seq (product-v3 REQ-K-3). */
+  listRecentFills(market: string, limit: number): FillRow[];
+  /** Latest non-null `block_time_ms` for a market; `null` when none exists (product-v3 REQ-K-2). */
+  latestFillTimeMs(market: string): number | null;
   insertFundingEvent(row: FundingEventRow): void;
   listFundingEvents(market: string, limit?: number): FundingEventRow[];
 
@@ -280,6 +292,21 @@ export function openDb(path: string): Db {
         )
         .all(...params)
         .map((row) => toFillRow(row));
+    },
+
+    listFillsSince() {
+      // Stub (product-v3 freeze): implemented in the K-line wave.
+      return [];
+    },
+
+    listRecentFills() {
+      // Stub (product-v3 freeze): implemented in the K-line wave.
+      return [];
+    },
+
+    latestFillTimeMs() {
+      // Stub (product-v3 freeze): implemented in the K-line wave.
+      return null;
     },
 
     insertFundingEvent(row) {

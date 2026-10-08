@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Fructus API",
-    "version": "0.2.0",
-    "description": "Product-v2 REST surface (PRD REQ-B-7, D14). Mirrors the server's exported ROUTES table (server/src/api.ts) and docs/api.md. Every response is the unified JSON envelope: {ok: true, data} | {ok: false, error: {code, message}}. Amounts, rates, accumulators and seqs are decimal strings of raw base units."
+    "version": "0.3.0",
+    "description": "Product-v2 REST surface (PRD REQ-B-7, D14) extended by the product-v3 K-line reads (/market/candles, /market/trades; PRD product-v3). Mirrors the server's exported ROUTES table (server/src/api.ts) and docs/api.md. Every response is the unified JSON envelope: {ok: true, data} | {ok: false, error: {code, message}}. Amounts, rates, accumulators and seqs are decimal strings of raw base units."
   },
   "servers": [{ "url": "http://127.0.0.1:8787", "description": "local / devnet prototype" }],
   "paths": {
@@ -180,6 +180,57 @@
             "description": "Bid/ask levels as [price, size] pairs, best first.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BookEnvelope" } } }
           }
+        }
+      }
+    },
+    "/market/candles": {
+      "get": {
+        "summary": "OHLCV candles aggregated from indexed fills (product-v3)",
+        "operationId": "getMarketCandles",
+        "parameters": [
+          {
+            "name": "interval",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["1m", "5m", "15m", "1h", "4h", "1d"] },
+            "description": "Bucket size; bucket start = floor(timeMs / intervalMs) * intervalMs."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 300 },
+            "description": "Max candles; the window ends at the latest timed fill's bucket."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ascending, compact (non-empty buckets only), at most `limit` candles.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CandlesEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/market/trades": {
+      "get": {
+        "summary": "Recent market trades (fills), newest first (product-v3)",
+        "operationId": "getMarketTrades",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
+            "description": "Max trade rows, descending by seq."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fills descending by seq; `timeMs` null only for pre-migration rows.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TradesEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
     },
@@ -535,6 +586,42 @@
           "asks": { "type": "array", "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 } }
         }
       },
+      "CandleView": {
+        "type": "object",
+        "required": ["timeMs", "open", "high", "low", "close", "volume", "trades"],
+        "properties": {
+          "timeMs": { "type": "string", "description": "Bucket start (ms epoch) as a decimal string" },
+          "open": { "type": "string" },
+          "high": { "type": "string" },
+          "low": { "type": "string" },
+          "close": { "type": "string" },
+          "volume": { "type": "string", "description": "Sum of raw sizes over the bucket" },
+          "trades": { "type": "integer", "description": "Fill count in the bucket" }
+        }
+      },
+      "CandlesResponse": {
+        "type": "object",
+        "required": ["candles"],
+        "properties": { "candles": { "type": "array", "items": { "$ref": "#/components/schemas/CandleView" } } }
+      },
+      "TradeView": {
+        "type": "object",
+        "required": ["seq", "slot", "timeMs", "owner", "side", "price", "size"],
+        "properties": {
+          "seq": { "type": "string" },
+          "slot": { "type": "string" },
+          "timeMs": { "type": ["string", "null"], "description": "Block time in ms; null only for pre-migration rows" },
+          "owner": { "type": "string" },
+          "side": { "type": "integer", "enum": [0, 1] },
+          "price": { "type": "string" },
+          "size": { "type": "string" }
+        }
+      },
+      "TradesResponse": {
+        "type": "object",
+        "required": ["trades"],
+        "properties": { "trades": { "type": "array", "items": { "$ref": "#/components/schemas/TradeView" } } }
+      },
       "ActionResponse": {
         "type": "object",
         "required": ["actionId", "status"],
@@ -603,6 +690,16 @@
         "required": ["ok", "data"],
         "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/BookView" } }
       },
+      "CandlesEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/CandlesResponse" } }
+      },
+      "TradesEnvelope": {
+        "type": "object",
+        "required": ["ok", "data"],
+        "properties": { "ok": { "const": true }, "data": { "$ref": "#/components/schemas/TradesResponse" } }
+      },
       "ActionEnvelope": {
         "type": "object",
         "required": ["ok", "data"],
@@ -623,7 +720,7 @@
   "x-ws": {
     "endpoint": "/ws?token=<session JWT>",
     "unauthorizedCloseCode": 4401,
-    "messageTypes": ["book", "mark", "user", "tx"],
+    "messageTypes": ["book", "mark", "user", "tx", "trade"],
     "spec": "docs/api/ws.md"
   }
 }

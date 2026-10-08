@@ -167,6 +167,42 @@ export interface BookView {
   asks: [string, string][];
 }
 
+/** One aggregated candle for `GET /market/candles` (product-v3 REQ-K-2). */
+export interface CandleView {
+  /** Bucket start (ms epoch), decimal string. */
+  timeMs: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  /** Sum of raw fill sizes over the bucket. */
+  volume: string;
+  /** Fill count in the bucket. */
+  trades: number;
+}
+
+/** `GET /market/candles` response. */
+export interface CandlesResponse {
+  candles: CandleView[];
+}
+
+/** One market trade print for `GET /market/trades` (product-v3 REQ-K-3). */
+export interface TradeView {
+  seq: string;
+  slot: string;
+  /** Block time in ms; `null` only for pre-migration rows. */
+  timeMs: string | null;
+  owner: string;
+  side: 0 | 1;
+  price: string;
+  size: string;
+}
+
+/** `GET /market/trades` response. */
+export interface TradesResponse {
+  trades: TradeView[];
+}
+
 // --- Actions (`/actions/*`, REQ-B-5) ----------------------------------------
 
 /** `POST /actions/deposit` body. */
@@ -247,4 +283,5 @@ export type ServerWsMessage =
   | { type: "book"; market: string; book: BookView }
   | { type: "mark"; market: string; mark: MarketView }
   | { type: "user"; portfolio: UserPortfolio }
-  | { type: "tx"; action: ActionResponse };
+  | { type: "tx"; action: ActionResponse }
+  | { type: "trade"; market: string; trade: TradeView };
