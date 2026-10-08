@@ -18,6 +18,15 @@ it(`PARSE-FORMAT-EXACT: parseAmount("1.5") == "1500000", round-trips formatAmoun
   expect(parseAmount("0")).toBe("0");
   expect(parseAmount("18446744073709.551615")).toBe("18446744073709551615");
 
+  // Deterministic regression (live counterexample, browser walkthrough 2026-10-08):
+  // the integer-only path must scale too — measured parseAmount("100") === "100"
+  // (a deposit of 100 landed as 0.0001). The generated sweep skips trailing-zero
+  // raws, i.e. exactly formatAmount's integer-form outputs, so pin them here.
+  expect(parseAmount("100")).toBe("100000000");
+  expect(parseAmount("1")).toBe("1000000");
+  expect(parseAmount("100000000")).toBe("100000000000000");
+  expect(parseAmount("0.5")).toBe("500000");
+
   // Rejects — 7 dp, empty, non-numeric, negative, exponent, bare separators, non-ASCII digits.
   const malformed = ["1.0000000", "1.1234567", "", "abc", "-1", "1e6", ".", ",", "١٢٣"];
   for (const input of malformed) {
