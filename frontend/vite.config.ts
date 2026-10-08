@@ -30,6 +30,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+    // jsdom realm normalisation for typed arrays (see test/setup.ts).
+    setupFiles: ["./test/setup.ts"],
     globals: true,
     restoreMocks: true,
   },

@@ -39,17 +39,23 @@ function parseStoredSecretKey(raw: string | null): Uint8Array | null {
 
 /** Load the persisted demo keypair, creating + persisting one when absent (repairs corrupted entries). */
 export function loadOrCreateDemoKeypair(storage: StorageLike): Keypair {
-  const secretKey = parseStoredSecretKey(storage.getItem(DEMO_KEY_STORAGE));
-  if (secretKey !== null) {
-    try {
-      return Keypair.fromSecretKey(secretKey);
-    } catch {
-      /* structurally invalid key: fall through to regeneration */
-    }
-  }
+  const existing = loadExistingDemoKeypair(storage);
+  if (existing !== null) return existing;
   const keypair = Keypair.generate();
   storage.setItem(DEMO_KEY_STORAGE, JSON.stringify(Array.from(keypair.secretKey)));
   return keypair;
+}
+
+/** Load the persisted demo keypair WITHOUT creating one (session-restore path). */
+export function loadExistingDemoKeypair(storage: StorageLike): Keypair | null {
+  const secretKey = parseStoredSecretKey(storage.getItem(DEMO_KEY_STORAGE));
+  if (secretKey === null) return null;
+  try {
+    return Keypair.fromSecretKey(secretKey);
+  } catch {
+    /* structurally invalid key: treat as absent */
+    return null;
+  }
 }
 
 /** Remove the demo keypair from storage. */
@@ -65,30 +71,3 @@ export function signMessageBase58(keypair: Keypair, message: string): string {
   const signature = nacl.sign.detached(messageBytes, keypair.secretKey);
   return bs58.encode(signature);
 }
-
-/**
- * Test-runtime realm normalisation (no-op in real browsers).
- *
- * jsdom — as Vitest runs it — hosts its window in a separate V8 realm, so
- * `new TextEncoder()` hands back typed arrays that fail tweetnacl's and
- * web3.js' `instanceof Uint8Array` checks (detached-signature verification via
- * caller-provided TextEncoder output breaks). Only when that mismatch is
- * observable, wrap `encode` so its output is a realm-local Uint8Array. In a
- * browser (and in plain Node) the probe passes and the global stays untouched.
- */
-function ensureRealmConsistentTextEncoder(): void {
-  try {
-    if (new TextEncoder().encode("") instanceof Uint8Array) return;
-    const originalEncode = TextEncoder.prototype.encode;
-    TextEncoder.prototype.encode = function (this: TextEncoder, input?: string): Uint8Array<ArrayBuffer> {
-      const encoded = input === undefined ? originalEncode.call(this) : originalEncode.call(this, input);
-      const copy = new Uint8Array(encoded.length);
-      copy.set(encoded);
-      return copy;
-    };
-  } catch {
-    /* probe unavailable: leave the global as-is */
-  }
-}
-
-ensureRealmConsistentTextEncoder();

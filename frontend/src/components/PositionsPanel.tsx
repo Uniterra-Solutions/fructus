@@ -37,6 +37,7 @@ export function PositionsPanel({ portfolio, disabled, onClose }: PositionsPanelP
 
   const confirmClose = (): void => {
     if (closing === null || !closeValid || closeRaw === null) return;
+    setClosing(null);
     onClose(closing.side, closeRaw);
   };
 

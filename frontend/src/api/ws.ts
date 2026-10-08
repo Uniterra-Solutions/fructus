@@ -11,6 +11,12 @@ export interface WsClientOptions {
   token: string;
   onMessage: (message: ServerWsMessage) => void;
   onStatus?: (status: WsStatus) => void;
+  /**
+   * Fired when the server refuses the session (close code 4401) — the client
+   * stops permanently (retrying a dead token is pointless) and the host app is
+   * expected to clear the session and re-surface the login flow.
+   */
+  onUnauthorized?: () => void;
   reconnectBaseMs?: number;
   reconnectCapMs?: number;
   /** Test seam: build the underlying socket (defaults to `new WebSocket(url)`). */
@@ -72,9 +78,21 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       /* surface as a close event; reconnect policy lives in onclose */
     };
 
-    next.onclose = () => {
+    next.onclose = (event: CloseEvent) => {
       if (stopped || next !== socket) return;
       socket = null;
+      if (event.code === 4401) {
+        // The server refused the session (invalid/expired token): stop for good
+        // and let the host clear it — reconnecting would loop on a dead token.
+        stopped = true;
+        if (reconnectTimer !== null) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        report("closed");
+        opts.onUnauthorized?.();
+        return;
+      }
       report("closed");
       scheduleReconnect();
     };

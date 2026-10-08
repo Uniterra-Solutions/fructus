@@ -72,6 +72,9 @@ export function reduceWsMessage(state: TerminalState, message: ServerWsMessage):
     }
     case "tx":
       return { ...state, lastAction: message.action };
+    default:
+      // Forward-compatible: an unknown push type must not clobber the state.
+      return state;
   }
 }
 
