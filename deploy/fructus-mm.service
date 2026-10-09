@@ -1,6 +1,6 @@
 [Unit]
 Description=Fructus market-maker bot (quotes against the local devstack)
-After=network-online.target fructus-devstack.service
+After=network-online.target fructus-devstack.service fructus-server.service
 Wants=fructus-devstack.service
 
 [Service]
@@ -8,13 +8,17 @@ Type=simple
 WorkingDirectory=/root/data/fructus/scripts
 EnvironmentFile=-/root/data/fructus/deploy/mm.env
 Environment=HOME=/root
-# Quote ladder: 8 levels per side at ±25 bps steps around the mark (±2% reach),
-# 5-lot size per level, re-quoted every 5 s. MM_* env always wins over the bot
-# defaults (systemd applies EnvironmentFile first, then Environment).
+# Quote ladder: 8 levels per side at ±25 bps steps around the latest traded
+# price (the mark; index fallback), 5-lot size per level. The 1 s cycle is the
+# re-quote trigger: a price update makes every desired level differ, so the
+# whole stale ladder is cancelled and re-placed immediately; an unchanged
+# price is a no-op. MM_* env always wins over the bot defaults (systemd
+# applies EnvironmentFile first, then Environment).
 Environment=MM_LEVELS=8
 Environment=MM_SPREAD_BPS=25
 Environment=MM_SIZE=5000000
-Environment=MM_INTERVAL_MS=5000
+Environment=MM_INTERVAL_MS=1000
+Environment=MM_MARK_URL=http://127.0.0.1:8787/market
 ExecStart=/usr/local/bin/node /root/data/fructus/scripts/node_modules/tsx/dist/cli.mjs mm-bot.mts
 Restart=always
 RestartSec=5

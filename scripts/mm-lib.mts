@@ -1,8 +1,10 @@
 //! Market-maker quote math (product-v3 REQ-M-1): pure planning functions.
 //!
 //! Contract (pinned by `test/mm-lib.test.ts`):
-//!  - `resolveAnchor(index)` = the trustless index rate (`null` ⇒ 0n, the
-//!    caller skips the cycle); the book mid never drags the ladder;
+//!  - `resolveAnchor(mark, index)` = the latest traded price (the mark) when
+//!    the market has prints, else the trustless index rate (`0n` when neither
+//!    exists — the caller skips the cycle); the book mid never drags the
+//!    ladder;
 //!  - level k (1-based): `bid_k = floor(anchor·(10000 − k·spreadBps) / 10000)`,
 //!    `ask_k = ceil(anchor·(10000 + k·spreadBps) / 10000)` — integer BigInt math;
 //!  - a quote is skipped when it would cross the book (`bid_k ≥ bestAsk` or
@@ -54,7 +56,8 @@ const MAX_LEVELS = 8;
 /** Per-level spread bound in basis points (PRD REQ-M-1: `MM_SPREAD_BPS` 1..10000). */
 const MAX_SPREAD_BPS = 10_000;
 /** Broker loop floor (PRD REQ-M-1: `MM_INTERVAL_MS` minimum 5000). */
-const MIN_INTERVAL_MS = 5_000;
+/** Fast cadence floor: each cycle is the re-quote trigger (mark poll + diff). */
+const MIN_INTERVAL_MS = 500;
 
 const TEN_K = 10_000n;
 
@@ -92,7 +95,7 @@ export function parseQuoteParams(env: Record<string, string | undefined>): Quote
 }
 
 /**
- * Parse `MM_INTERVAL_MS`: default `MM_DEFAULTS.intervalMs`, floored at 5000 ms
+ * Parse `MM_INTERVAL_MS`: default `MM_DEFAULTS.intervalMs`, floored at 500 ms
  * (PRD REQ-M-1). A non-numeric override falls back to the default rather than
  * killing the bot; there is no upper bound.
  */
@@ -105,11 +108,12 @@ export function parseIntervalMs(env: Record<string, string | undefined>): number
 }
 
 /**
- * Anchor = the trustless index rate. The book mid is self-referential while
- * the book only carries the MM's own quotes, so it must not drag the ladder
- * away from the index.
+ * Anchor = the latest traded price (the mark) when the market has prints,
+ * else the trustless index rate. The book mid is self-referential while the
+ * book only carries the MM's own quotes, so it must not drag the ladder.
  */
-export function resolveAnchor(index: bigint | null): bigint {
+export function resolveAnchor(mark: bigint | null, index: bigint | null): bigint {
+  if (mark !== null && mark > 0n) return mark;
   return index ?? 0n;
 }
 

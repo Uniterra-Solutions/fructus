@@ -229,10 +229,11 @@ test("MM-LADDER-EXACT-OFFSETS: level k sits exactly k×spread bps away (floor/ce
   assert.deepEqual(bBids[0], { side: 0, price: "995002", size: "1000000" });
   assert.deepEqual(bAsks[0], { side: 1, price: "1005004", size: "1000000" });
 
-  // (c) the anchor is the trustless index; null ⇒ 0n (callers skip the cycle)
-  assert.equal(resolveAnchor(1_234_567n), 1_234_567n);
-  assert.equal(resolveAnchor(null), 0n);
-  const anchor = resolveAnchor(2_000_000n);
+  // (c) the anchor follows the latest trade (the mark); the index is the fallback
+  assert.equal(resolveAnchor(1_234_567n, 2_000_000n), 1_234_567n);
+  assert.equal(resolveAnchor(null, 2_000_000n), 2_000_000n);
+  assert.equal(resolveAnchor(null, null), 0n);
+  const anchor = resolveAnchor(2_000_000n, null);
   assert.equal(anchor, 2_000_000n);
   const oneSided = planQuotes(anchor, null, 3_000_000n, { levels: 1, spreadBps: 50, size: "1000000" });
   assert.deepEqual(oneSided.filter((q) => q.side === 0).map((q) => q.price), ["1990000"]);

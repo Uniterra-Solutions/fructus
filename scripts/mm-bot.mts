@@ -3,15 +3,20 @@
 //! `mm-lib.mts`.
 //!
 //! Env: RPC_URL (required), MM_KEYPAIR (keypair path, required),
+//! MM_MARK_URL (server `/market`, default http://127.0.0.1:8787/market),
 //! MM_LEVELS, MM_SPREAD_BPS, MM_SIZE, MM_INTERVAL_MS (see mm-lib).
 //!
-//! Every cycle: read the perp market (index baseline + index source) and the
-//! order book; keep the book orders owned by the bot; `anchor = index` (the
-//! trustless rate — the mid is self-referential and kept for diagnostics
-//! only); plan the grid (`planQuotes`) and the
-//! cancel/place diff (`planRequote`); submit cancels then places (one tx per
-//! instruction, signed with the bot keypair and confirmed); log one summary
-//! line. Per-cycle errors are logged and the loop continues; SIGINT stops.
+//! Every cycle: read the perp market + order book and the latest mark (the
+//! server's latest fill price); `anchor = resolveAnchor(mark, index)` — the
+//! ladder follows the latest traded price, falling back to the trustless
+//! index rate. A price update makes every desired level differ, so the
+//! cancel/place diff (`planRequote`) pulls the whole stale ladder and
+//! re-places it around the new anchor immediately; unchanged prices are a
+//! no-op. The crossing constraint is evaluated against OTHER makers' orders
+//! only (own orders are cancelled first, so they must not block the new
+//! ladder). One tx per instruction, signed with the bot keypair and
+//! confirmed; log one summary line. Per-cycle errors are logged and the loop
+//! continues; SIGINT stops.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -57,6 +62,8 @@ interface BotContext {
   orderBook: PublicKey;
   params: QuoteParams;
   intervalMs: number;
+  /** Server `/market` endpoint carrying the latest fill price (the mark). */
+  markUrl: string;
 }
 
 function errorMessage(err: unknown): string {
@@ -88,6 +95,41 @@ function collectOwnOrders(book: OrderBookState, owner: PublicKey): OwnOrder[] {
         size: order.size.toString(),
       }));
   return [...ofSide(book.bids, 0), ...ofSide(book.asks, 1)];
+}
+
+/** Best resting price on a side EXCLUDING the bot's own orders (`null` when none). */
+function bestOtherPrice(orders: OrderState[], owner: PublicKey, side: 0 | 1): bigint | null {
+  let best: bigint | null = null;
+  for (const order of orders) {
+    if (order.active !== 1 || order.owner.equals(owner)) continue;
+    if (
+      best === null ||
+      (side === 0 ? order.price > best : order.price < best) // bids: max, asks: min
+    ) {
+      best = order.price;
+    }
+  }
+  return best;
+}
+
+/**
+ * The latest traded price (the mark) from the server's `/market` read: the
+ * quote anchor follows real prints. Any failure (server down, no fills yet)
+ * yields `null` — the cycle then falls back to the trustless index rate.
+ */
+async function readMarkPrice(url: string): Promise<bigint | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { ok?: boolean; data?: { mark?: string | null } };
+    if (body.ok !== true || body.data === undefined) return null;
+    const mark = body.data.mark ?? null;
+    if (mark === null) return null;
+    const value = BigInt(mark);
+    return value > 0n ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -157,17 +199,19 @@ async function runCycle(ctx: BotContext): Promise<void> {
   const own = collectOwnOrders(book, ctx.bot.publicKey);
   const mid = midFromBook(book); // null unless the book is two-sided
   const index = await readIndexLevel(ctx.connection, market);
-  const anchor = resolveAnchor(index);
+  const mark = await readMarkPrice(ctx.markUrl);
+  const anchor = resolveAnchor(mark, index);
   if (anchor <= 0n) {
     console.error(
-      `[mm] cycle skipped: no anchor reference (mid=${mid ?? "null"}, index=${index ?? "null"})`,
+      `[mm] cycle skipped: no anchor reference (mark=${mark ?? "null"}, index=${index ?? "null"})`,
     );
     return;
   }
 
-  // The cached best bid/ask are 0 on an empty side (mirrors `orderbook::mid`).
-  const bestBid = book.bestBid === 0n ? null : book.bestBid;
-  const bestAsk = book.bestAsk === 0n ? null : book.bestAsk;
+  // The crossing constraint must ignore the bot's own resting orders: the
+  // requote cancels them first, so they must not block the new ladder.
+  const bestBid = bestOtherPrice(book.bids, ctx.bot.publicKey, 0);
+  const bestAsk = bestOtherPrice(book.asks, ctx.bot.publicKey, 1);
   const desired = planQuotes(anchor, bestBid, bestAsk, ctx.params);
   const plan = planRequote(own, desired);
 
@@ -214,7 +258,7 @@ async function runCycle(ctx: BotContext): Promise<void> {
   const summary =
     `[mm] cycle anchor=${anchor} ownOrders=${own.length} ` +
     `cancels=${plan.cancels.length} places=${plan.places.length} submitted=${submitted} ` +
-    `mid=${mid ?? "null"} index=${index ?? "null"}`;
+    `mark=${mark ?? "null"} index=${index ?? "null"} mid=${mid ?? "null"}`;
   if (failures.length === 0) {
     console.log(summary);
   } else {
@@ -260,6 +304,7 @@ async function main(): Promise<void> {
   }
 
   const intervalMs = parseIntervalMs(process.env);
+  const markUrl = process.env.MM_MARK_URL ?? "http://127.0.0.1:8787/market";
   const connection = new Connection(rpcUrl, "confirmed");
   const market = marketPda().address;
   const ctx: BotContext = {
@@ -269,11 +314,13 @@ async function main(): Promise<void> {
     orderBook: orderBookPda(market).address,
     params,
     intervalMs,
+    markUrl,
   };
 
   console.log(
     `[mm] bot=${bot.publicKey.toBase58()} rpc=${rpcUrl} market=${market.toBase58()} ` +
-      `levels=${params.levels} spreadBps=${params.spreadBps} size=${params.size} intervalMs=${intervalMs}`,
+      `levels=${params.levels} spreadBps=${params.spreadBps} size=${params.size} ` +
+      `intervalMs=${intervalMs} markUrl=${markUrl}`,
   );
   console.log("[mm] quoting — Ctrl-C to stop");
 
