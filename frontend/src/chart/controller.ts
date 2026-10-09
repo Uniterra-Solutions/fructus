@@ -150,7 +150,10 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
   function applyCandles(next: CandleView[]): void {
     candles = next;
     candleSeries.setData(next.map(toCandlePoint));
-    volumeSeries.setData(next.map(toVolumePoint));
+    // Zero-volume buckets paint hairline dashes on the histogram baseline;
+    // keep the volume series sparse (print buckets only) so the flat sampled
+    // minutes stay clean.
+    volumeSeries.setData(next.filter((candle) => Number(candle.volume) > 0).map(toVolumePoint));
     markSeries.setData(next.map(toMarkPoint));
   }
 
@@ -208,7 +211,7 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       const last = candles[candles.length - 1];
       if (last === undefined) return;
       candleSeries.update(toCandlePoint(last));
-      volumeSeries.update(toVolumePoint(last));
+      if (Number(last.volume) > 0) volumeSeries.update(toVolumePoint(last));
       markSeries.update(toMarkPoint(last));
     },
     setMarkLines(market) {
