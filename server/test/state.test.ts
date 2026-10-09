@@ -240,7 +240,15 @@ function assertPortfolio(portfolio: UserPortfolio, seed: PortfolioSeed, label: s
     [0, seed.long, expected.upnlLong],
     [1, seed.short, expected.upnlShort],
   ] as const) {
-    if (sideSeed.notional === 0n) continue; // pristine sides may be omitted from the view
+    if (sideSeed.notional === 0n) {
+      // Zero-notional sides (pristine or fully closed) are never served.
+      assert.equal(
+        portfolio.positions.find((p) => p.side === side),
+        undefined,
+        `${label}: side ${side} must be omitted (zero notional)`,
+      );
+      continue;
+    }
     const view = portfolio.positions.find((p) => p.side === side);
     assert.ok(view !== undefined, `${label}: position view missing for side ${side}`);
     assert.equal(view!.notional, sideSeed.notional.toString(), `${label}: side ${side} notional`);

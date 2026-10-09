@@ -66,6 +66,9 @@ export function computePortfolio(db: Db, wallet: PublicKey, market: PublicKey): 
     // Defensive: the row must actually belong to this (market, wallet) account.
     if (!position.market.equals(market) || !position.owner.equals(wallet)) continue;
     if (position.side !== 0 && position.side !== 1) continue; // invalid side byte — never a view
+    // A fully closed side keeps its on-chain account with notional 0: the
+    // lingering row is not a position — never a view.
+    if (position.notional === 0n) continue;
 
     const sideEnum = positionSideFromSideByte(position.side);
     const sidePnl =

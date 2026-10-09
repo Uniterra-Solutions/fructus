@@ -45,6 +45,7 @@ import type {
   BindPrepareResponse,
   ChallengeResponse,
   FaucetResponse,
+  PositionsResponse,
   SessionResponse,
 } from "fructus-sdk/src/api.js";
 import {
@@ -593,6 +594,22 @@ test("E2E-PRODUCT-WALK: the bind→deposit→trade→close→withdraw walk succe
   assert.equal(closed.notional, 0n, `closing the full size must reduce the position notional to zero (got ${closed?.notional})`);
   const afterClose = await readCollateral(s, trader.publicKey);
   assert.equal(afterClose?.reserved, 0n, "closing must release the reserved margin");
+
+  // --- 6b. the served view drops the closed side ---------------------------
+  // The closed side lingers on-chain with notional 0; `/me/positions` serves
+  // open sides only, so the LONG must leave the view once the indexer catches up.
+  const positionsAfterClose = await waitForValue(
+    async () =>
+      expectOk<PositionsResponse>(
+        await call(s.server, "GET", "/me/positions", { token }),
+        "GET /me/positions after the close",
+      ),
+    (response) => response.positions.every((position) => position.side !== 0),
+  );
+  assert.ok(
+    positionsAfterClose.positions.every((position) => position.side !== 0),
+    "a fully closed side (notional 0 on-chain) must be omitted from /me/positions",
+  );
 
   // --- 7. operator withdraw ------------------------------------------------
   const withdrawAmount = depositAmount / 2n;

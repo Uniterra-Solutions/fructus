@@ -585,16 +585,11 @@ test("API-READS-SERVE-INDEXED-TRUTH: /me, /me/positions, /market, /market/book e
   assert.ok(servedLong !== undefined, "GET /me/positions must carry the chain-decoded LONG side");
   assert.equal(servedLong.notional, chainLong.notional.toString(), "LONG notional must equal the chain-decoded position");
   assert.equal(servedLong.upnl, expectedUpnl.toString(), "LONG upnl must equal the chain-decoded position's upnl");
-  // The SHORT side is pristine on-chain: it may be omitted, but if a view is
-  // served it must report the zero contribution (sdk/src/api.ts).
+  // Zero-notional sides (pristine or fully closed) are never served — a closed
+  // side lingers on-chain with notional 0 but is not a position (sdk/src/api.ts).
   for (const position of positions.positions) {
     assert.ok(position.side === 0 || position.side === 1, `position side must be 0 or 1 (got ${JSON.stringify(position.side)})`);
-    if (position.side === 1) {
-      assert.equal(position.notional, "0", "the pristine SHORT side must report zero notional");
-      assert.equal(position.upnl, "0", "the pristine SHORT side must report zero upnl");
-      assert.equal(position.reqInitial, "0", "the pristine SHORT side must report zero initial requirement");
-      assert.equal(position.reqMaint, "0", "the pristine SHORT side must report zero maintenance requirement");
-    }
+    assert.notEqual(position.notional, "0", "zero-notional sides must be omitted from /me/positions");
   }
 });
 

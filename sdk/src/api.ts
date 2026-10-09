@@ -83,7 +83,7 @@ export interface BindConfirmResponse {
 /** Account health per the account-level predicate (REQ-A2-1). */
 export type Health = "healthy" | "liquidatable";
 
-/** One side's position view; a pristine side reports zero contribution. */
+/** One open side's position view; zero-notional sides (pristine or fully closed) are omitted. */
 export interface PositionView {
   /** `0` = Long/Bid, `1` = Short/Ask. */
   side: 0 | 1;

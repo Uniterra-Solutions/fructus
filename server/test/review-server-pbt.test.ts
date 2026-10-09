@@ -731,8 +731,8 @@ test("REVIEW-STATE-DEFENSIVE-ROWS: foreign-owner, foreign-market and invalid-sid
     const clean = computePortfolio(db, wallet, MARKET);
     assert.deepEqual(
       clean.positions.map((v) => [v.side, v.notional]),
-      [[0, "500000"], [1, "0"]],
-      "the clean account has the long side (500_000) and an empty short row",
+      [[0, "500000"]],
+      "the clean account serves the long side only — zero-notional sides never appear",
     );
 
     // Corrupt the CANONICAL rows: foreign owner / foreign market / side byte 2.
