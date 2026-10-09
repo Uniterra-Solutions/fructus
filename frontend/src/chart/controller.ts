@@ -110,12 +110,13 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       vertLines: { color: "rgba(139, 149, 167, 0.12)" },
       horzLines: { color: "rgba(139, 149, 167, 0.12)" },
     },
-    // Autoscale the price pane to the visible candles (light top/bottom
-    // margin); the volume pane carries its own scale.
+    // Autoscale the price pane to the visible candles; the top margin clears
+    // the in-pane legend (two rows on mobile) so the highest candle never
+    // touches the legend/labels. The volume pane carries its own scale.
     rightPriceScale: {
       borderColor: "rgba(139, 149, 167, 0.2)",
       autoScale: true,
-      scaleMargins: { top: 0.08, bottom: 0.08 },
+      scaleMargins: { top: 0.22, bottom: 0.1 },
     },
     // Fixed bar width: the series scrolls like a terminal instead of
     // fitContent stretching a handful of samples across the whole pane.
@@ -134,8 +135,10 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
     borderVisible: false,
     wickUpColor: "#26a69a",
     wickDownColor: "#ef5350",
-    // Only the explicit mark/index price lines are drawn as levels.
+    // Only the explicit mark/index price lines are drawn as levels; their
+    // axis tags carry the levels (the series' own tag would duplicate them).
     priceLineVisible: false,
+    lastValueVisible: false,
   });
 
   // Standard TV layout: volume rides its own bottom pane — the price pane

@@ -87,13 +87,13 @@ export function ChartPanel({
           <span className="text-muted">Fructus · {interval}</span>
           {last !== undefined && (
             <>
-              <span className="text-muted">
+              <span className="hidden text-muted sm:inline">
                 O <span className="text-ink">{formatAmount(last.open)}</span>
               </span>
-              <span className="text-muted">
+              <span className="hidden text-muted sm:inline">
                 H <span className="text-ink">{formatAmount(last.high)}</span>
               </span>
-              <span className="text-muted">
+              <span className="hidden text-muted sm:inline">
                 L <span className="text-ink">{formatAmount(last.low)}</span>
               </span>
               <span className="text-muted">
