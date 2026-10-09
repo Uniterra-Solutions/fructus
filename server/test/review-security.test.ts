@@ -196,6 +196,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     operatorKeypairPath: null,
     port: 0,
     keeperIntervalMs: 5_000,
+    markSampleIntervalMs: 5_000,
     faucetEnabled: false,
     faucetMint: null,
     faucetMintAuthorityKeypair: null,

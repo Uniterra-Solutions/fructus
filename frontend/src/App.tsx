@@ -217,6 +217,27 @@ function Terminal() {
     void refreshSnapshots();
   }, [refreshSnapshots]);
 
+  // ---- live chart: the candle series is sampled server-side (mark samples ∪
+  // trades), so refresh the market/candles/trades snapshots on a fixed cadence
+  // — buckets advance every interval even without a single trade.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void (async () => {
+        try {
+          const [market, candles, trades] = await Promise.all([
+            api.market(),
+            api.candles(intervalRef.current),
+            api.trades(),
+          ]);
+          store.dispatch((s) => ({ ...s, market, candles: candles.candles, trades: trades.trades }));
+        } catch {
+          /* transient — the next tick retries; WS reports hard failures */
+        }
+      })();
+    }, 5_000);
+    return () => window.clearInterval(id);
+  }, [api, store]);
+
   // ---- session restore ------------------------------------------------------
   useEffect(() => {
     const saved = loadStoredSession();

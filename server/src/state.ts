@@ -22,6 +22,7 @@ import {
   userCollateralPda,
   type BookView,
   type MarketView,
+  type PerpMarketState,
   type PositionView,
   type UserPortfolio,
 } from "fructus-sdk/src/index.js";
@@ -136,15 +137,38 @@ export function computeMarket(db: Db, market: PublicKey): MarketView {
 
   return {
     mark: mark === null ? null : mark.toString(),
-    // The indexed state holds only the last-settlement pool baseline
-    // (`index_n`/`index_d`); no live stake-pool read is available to the state
-    // layer, and a baseline priced against itself realizes zero yield — the
-    // same value the program's first settlement writes (`expectedIndex(null) == 0`).
-    index: "0",
+    // The trustless index level: the market's last-settlement stake-pool rate
+    // (`index_n`/`index_d`) scaled to the 1e6 price convention. `0` marks an
+    // un-set baseline (no settlement yet) — see `indexLevel`.
+    index: indexLevel(marketState).toString(),
     fundingAccumulator: marketState.fundingAccumulator.toString(),
     bestBid: bestBidValue === 0n ? null : bestBidValue.toString(),
     bestAsk: bestAskValue === 0n ? null : bestAskValue.toString(),
   };
+}
+
+/**
+ * The trustless index level: the market's last-settlement stake-pool rate
+ * (`index_n`/`index_d`), scaled to the 1e6 convention the mark/book use.
+ * `index_d == 0` marks an un-set baseline — the funding engine writes it at
+ * the first `settle_funding`, and the pair then tracks the pool per epoch.
+ * (The funding ENGINE's `index` argument is the annualized realized yield
+ * since that baseline; the terminal draws the rate level itself.)
+ */
+export function indexLevel(marketState: PerpMarketState): bigint {
+  return marketState.indexD === 0n ? 0n : (marketState.indexN * 1_000_000n) / marketState.indexD;
+}
+
+/**
+ * One mark sample for the candle series (product-v3 candles v2): the book mid,
+ * else the pool-rate index, else the last trade — so the series keeps printing
+ * while the book is one-sided or empty. `null` = no price source yet.
+ */
+export function samplePrice(db: Db, market: PublicKey): string | null {
+  const view = computeMarket(db, market);
+  if (view.mark !== null) return view.mark;
+  if (view.index !== "0") return view.index;
+  return db.latestFillPrice(market.toBase58());
 }
 
 /** L2 book view (REQ-B-3/B-7): `[price, size]` levels, best first. */

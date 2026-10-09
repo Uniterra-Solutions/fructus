@@ -14,6 +14,8 @@ export interface Config {
   port: number;
   /** Keeper loop period, ms (REQ-B-6). */
   keeperIntervalMs: number;
+  /** Mark-sample cadence for the candle series, ms (product-v3 candles v2). */
+  markSampleIntervalMs: number;
   /** Faucet enabled flag (D15, REQ-B-8). */
   faucetEnabled: boolean;
   /** Faucet tUSDC mint (base58); `null` when unset. */
@@ -32,6 +34,8 @@ export const DEFAULT_RPC_URL = "http://127.0.0.1:8899";
 export const DEFAULT_DATABASE_PATH = "./fructus-server.sqlite";
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_KEEPER_INTERVAL_MS = 5_000;
+/** 5 s — one candle sample every MARK_SAMPLE_INTERVAL_MS by default. */
+export const DEFAULT_MARK_SAMPLE_INTERVAL_MS = 5_000;
 /** 10,000 tUSDC (6 dp) — REQ-B-8 per-wallet 24 h cap. */
 export const DEFAULT_FAUCET_PER_WALLET_CAP = 10_000_000_000n;
 /** 1,000,000 tUSDC (6 dp) — global 24 h cap when the env does not say otherwise. */
@@ -87,6 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     operatorKeypairPath: optional(env, "OPERATOR_KEYPAIR"),
     port: intEnv(env, "PORT", DEFAULT_PORT),
     keeperIntervalMs: intEnv(env, "KEEPER_INTERVAL_MS", DEFAULT_KEEPER_INTERVAL_MS),
+    markSampleIntervalMs: intEnv(env, "MARK_SAMPLE_INTERVAL_MS", DEFAULT_MARK_SAMPLE_INTERVAL_MS),
     faucetEnabled: boolEnv(env, "FAUCET_ENABLED"),
     faucetMint: optional(env, "FAUCET_MINT"),
     faucetMintAuthorityKeypair: optional(env, "FAUCET_MINT_AUTHORITY_KEYPAIR"),

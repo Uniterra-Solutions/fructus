@@ -32,7 +32,7 @@ payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
 | `GET` | `/me/history` | JWT | Indexed fills + funding rows in seq order |
 | `GET` | `/market` | public | Market snapshot: `mark`, `index`, `fundingAccumulator`, `bestBid`, `bestAsk` |
 | `GET` | `/market/book` | public | L2 book levels `[price, size]`, best first |
-| `GET` | `/market/candles` | public | OHLCV candles from indexed fills: `interval` required (`1m`/`5m`/`15m`/`1h`/`4h`/`1d`), `limit` 1..1000 (default 300); ascending, compact; `400` on bad params |
+| `GET` | `/market/candles` | public | OHLCV candles over the sampled price series (mark samples ∪ trades): `interval` required (`1m`/`5m`/`15m`/`1h`/`4h`/`1d`), `limit` 1..1000 (default 300); ascending, compact; `400` on bad params |
 | `GET` | `/market/trades` | public | Recent market trades (fills), descending by seq: `limit` 1..200 (default 50); `timeMs` is null only for pre-migration rows |
 | `POST` | `/actions/deposit` | JWT | Build/submit a deposit action (`{amount}`) |
 | `POST` | `/actions/withdraw` | JWT | Build/submit a withdrawal action (`{amount}`) |
@@ -51,11 +51,15 @@ surfaces through the error envelope (`{ok: false, error: {...}}`) instead; the
 wallet receives the `tx` WebSocket push with the same confirmed
 `ActionResponse` when the action lands (see [api/ws.md](api/ws.md)).
 
-The product-v3 K-line reads: `/market/candles` buckets every timed fill by
-`bucket = floor(timeMs / intervalMs) × intervalMs` — only non-empty buckets are
+The product-v3 K-line reads: `/market/candles` merges the served price series —
+the server's mark samples (book mid → pool-rate index → last trade, every
+`MARK_SAMPLE_INTERVAL_MS`) and the timed fills — into buckets by
+`bucket = floor(timeMs / intervalMs) × intervalMs`. Only non-empty buckets are
 served, ascending, at most `limit` of them, with the window ending at the
-latest timed fill's bucket; fills without a block time are excluded. It is the
-chart source for the terminal. `/market/trades` is the tape source.
+latest point's bucket; fills without a block time are excluded. Buckets exist
+without trades (flat open==close candles), volume/trades come from the fills
+only, and higher timeframes are the standard fold of the base buckets. It is
+the chart source for the terminal. `/market/trades` is the tape source.
 
 ## SIWS login flow
 

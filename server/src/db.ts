@@ -46,6 +46,14 @@ export interface FillRow {
   timeMs?: number | null;
 }
 
+/** One mark-price sample feeding the candle series (product-v3 candles v2). */
+export interface MarkSampleRow {
+  /** ms epoch. */
+  timeMs: number;
+  /** Raw price, decimal string. */
+  price: string;
+}
+
 /** One funding-accumulator diff (REQ-B-2). */
 export interface FundingEventRow {
   /** Monotonic event seq — primary key. */
@@ -99,6 +107,17 @@ export interface Db {
   listRecentFills(market: string, limit: number): FillRow[];
   /** Latest non-null `block_time_ms` for a market; `null` when none exists (product-v3 REQ-K-2). */
   latestFillTimeMs(market: string): number | null;
+  /** Latest fill price for a market (most recent seq); `null` when none exists. */
+  latestFillPrice(market: string): string | null;
+
+  /** Append one mark-price sample; a same-ms write replaces the previous row (product-v3 candles v2). */
+  insertMarkSample(timeMs: number, price: string): void;
+  /** Mark samples with `timeMs >= minTimeMs`, ascending (newest rows win past `limit`). */
+  listMarkSamplesSince(minTimeMs: number, limit?: number): MarkSampleRow[];
+  /** Latest mark-sample timestamp; `null` when none exists. */
+  latestMarkSampleTimeMs(): number | null;
+  /** Drop samples older than `beforeMs`; returns the deleted row count. */
+  pruneMarkSamples(beforeMs: number): number;
   insertFundingEvent(row: FundingEventRow): void;
   listFundingEvents(market: string, limit?: number): FundingEventRow[];
 
@@ -241,6 +260,11 @@ export function openDb(path: string): Db {
       amount     TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS mark_samples (
+      time_ms INTEGER PRIMARY KEY,
+      price   TEXT NOT NULL
+    );
   `);
 
   // product-v3 REQ-K-1: stores deployed before v3 carry the 7-column fills
@@ -341,6 +365,41 @@ export function openDb(path: string): Db {
         .prepare("SELECT MAX(block_time_ms) AS max_time FROM fills WHERE market = ?")
         .get(market) as { max_time: number | null } | undefined;
       return row?.max_time ?? null;
+    },
+
+    latestFillPrice(market) {
+      const row = db
+        .prepare("SELECT price FROM fills WHERE market = ? ORDER BY seq DESC LIMIT 1")
+        .get(market) as { price: string } | undefined;
+      return row?.price ?? null;
+    },
+
+    insertMarkSample(timeMs, price) {
+      db.prepare("INSERT OR REPLACE INTO mark_samples (time_ms, price) VALUES (?, ?)").run(timeMs, price);
+    },
+
+    listMarkSamplesSince(minTimeMs, limit = 100_000) {
+      // Newest-first read (reversed before return) for the same reason as
+      // `listFillsSince`: past the limit the window must keep the LATEST rows.
+      return (
+        db
+          .prepare(
+            `SELECT time_ms AS timeMs, price FROM mark_samples
+             WHERE time_ms >= ? ORDER BY time_ms DESC LIMIT ?`,
+          )
+          .all(minTimeMs, limit) as Array<{ timeMs: number; price: string }>
+      ).reverse();
+    },
+
+    latestMarkSampleTimeMs() {
+      const row = db.prepare("SELECT MAX(time_ms) AS max_time FROM mark_samples").get() as
+        | { max_time: number | null }
+        | undefined;
+      return row?.max_time ?? null;
+    },
+
+    pruneMarkSamples(beforeMs) {
+      return Number(db.prepare("DELETE FROM mark_samples WHERE time_ms < ?").run(beforeMs).changes);
     },
 
     insertFundingEvent(row) {

@@ -48,7 +48,7 @@ import {
 } from "./errors.js";
 import type { Faucet } from "./faucet.js";
 import type { Keeper } from "./keeper.js";
-import { aggregateCandles, parseCandlesQuery, parseTradesLimit, toTradeView } from "./market-data.js";
+import { aggregateCandles, fillPoints, mergePoints, parseCandlesQuery, parseTradesLimit, samplePoints, toTradeView } from "./market-data.js";
 import type { CancelAction, CloseAction, OperatorService, OrderAction } from "./operator.js";
 
 export interface Route {
@@ -326,17 +326,24 @@ async function dispatch(deps: ApiServerDeps, req: IncomingMessage, res: ServerRe
         );
       }
       const market = deps.market.toBase58();
-      const latest = deps.db.latestFillTimeMs(market);
-      if (latest === null) {
+      // The sampled series (product-v3 candles v2): mark samples ∪ trade
+      // prints — the window closes at the latest of either.
+      const latestFill = deps.db.latestFillTimeMs(market);
+      const latestSample = deps.db.latestMarkSampleTimeMs();
+      const latestCandidates = [latestFill, latestSample].filter((value): value is number => value !== null);
+      if (latestCandidates.length === 0) {
         const data: CandlesResponse = { candles: [] };
         sendJson(res, 200, { ok: true, data } satisfies ApiResponse<CandlesResponse>);
         return;
       }
+      const latest = Math.max(...latestCandidates);
       const { intervalMs, limit } = query;
-      // The compact window ends at the latest timed fill's bucket; never below 0.
+      // The compact window ends at the latest point's bucket; never below 0.
       const windowFloor = Math.max(0, Math.floor(latest / intervalMs) * intervalMs - (limit - 1) * intervalMs);
+      const samples = deps.db.listMarkSamplesSince(windowFloor);
       const fills = deps.db.listFillsSince(market, windowFloor, CANDLES_FILLS_SCAN_LIMIT);
-      const data: CandlesResponse = { candles: aggregateCandles(fills, intervalMs, limit) };
+      const points = mergePoints(samplePoints(samples), fillPoints(fills));
+      const data: CandlesResponse = { candles: aggregateCandles(points, intervalMs, limit) };
       sendJson(res, 200, { ok: true, data } satisfies ApiResponse<CandlesResponse>);
       return;
     }

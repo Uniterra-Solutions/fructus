@@ -2,7 +2,7 @@
 //! trade-row projections for `/market/candles` + `/market/trades`.
 
 import type { CandleView, TradeView } from "fructus-sdk/src/api.js";
-import type { FillRow } from "./db.js";
+import type { FillRow, MarkSampleRow } from "./db.js";
 
 /** The candle intervals the API serves. */
 export type CandleIntervalName = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
@@ -66,33 +66,78 @@ interface CandleAcc {
   trades: number;
 }
 
-/** Aggregate timed fills into OHLCV candles: ascending, compact (non-empty buckets), at most `limit`. */
-export function aggregateCandles(fills: FillRow[], intervalMs: number, limit: number): CandleView[] {
-  // Only fills with a block time can bucket (pre-migration rows are excluded);
-  // seq order decides open/close, so sort ascending by seq first.
-  const timed = fills
+/**
+ * One candle price point (product-v3 candles v2): a trade print (`size`
+ * non-null) or a mark sample (`size` null). The served candle series is the
+ * union of both — continuous while the server samples, with trades adding
+ * volume and the trade count.
+ */
+export interface PricePoint {
+  timeMs: number;
+  price: bigint;
+  /** Fill size for trade prints; `null` for mark samples. */
+  size: bigint | null;
+}
+
+/** Project timed fills to price points (null-time rows cannot be bucketed). */
+export function fillPoints(fills: FillRow[]): PricePoint[] {
+  return fills
     .filter((fill) => fill.timeMs !== null && fill.timeMs !== undefined)
-    .sort((a, b) => a.seq - b.seq);
+    .map((fill) => ({ timeMs: fill.timeMs as number, price: BigInt(fill.price), size: BigInt(fill.size) }));
+}
+
+/** Project mark samples to price points. */
+export function samplePoints(samples: MarkSampleRow[]): PricePoint[] {
+  return samples.map((sample) => ({ timeMs: sample.timeMs, price: BigInt(sample.price), size: null }));
+}
+
+/**
+ * Merge point lists into one series ascending by `timeMs`; at an equal
+ * timestamp mark samples precede trade prints, so the trade decides the close.
+ */
+export function mergePoints(...lists: PricePoint[][]): PricePoint[] {
+  return lists
+    .flat()
+    .sort((a, b) => a.timeMs - b.timeMs || (a.size === null ? 0 : 1) - (b.size === null ? 0 : 1));
+}
+
+/**
+ * Aggregate price points into OHLCV candles: ascending, compact (non-empty
+ * buckets), at most `limit`. Per bucket the open is the first point, the close
+ * the last, high/low the extremes; volume and the trade count come from the
+ * trade points only (mark samples carry neither). Standard across intervals:
+ * every intervalMs is the same grouping, so higher timeframes are exactly the
+ * standard fold of the base buckets.
+ */
+export function aggregateCandles(points: PricePoint[], intervalMs: number, limit: number): CandleView[] {
+  if (points.length === 0) return [];
+  const ordered = mergePoints(points);
 
   const buckets = new Map<number, CandleAcc>();
-  for (const fill of timed) {
-    const bucket = Math.floor((fill.timeMs as number) / intervalMs) * intervalMs;
-    const price = BigInt(fill.price);
-    const size = BigInt(fill.size);
+  for (const point of ordered) {
+    const bucket = Math.floor(point.timeMs / intervalMs) * intervalMs;
     const acc = buckets.get(bucket);
     if (acc === undefined) {
-      buckets.set(bucket, { open: price, high: price, low: price, close: price, volume: size, trades: 1 });
+      buckets.set(bucket, {
+        open: point.price,
+        high: point.price,
+        low: point.price,
+        close: point.price,
+        volume: point.size ?? 0n,
+        trades: point.size === null ? 0 : 1,
+      });
     } else {
-      if (price > acc.high) acc.high = price;
-      if (price < acc.low) acc.low = price;
-      acc.close = price;
-      acc.volume += size;
-      acc.trades += 1;
+      if (point.price > acc.high) acc.high = point.price;
+      if (point.price < acc.low) acc.low = point.price;
+      acc.close = point.price;
+      if (point.size !== null) {
+        acc.volume += point.size;
+        acc.trades += 1;
+      }
     }
   }
-  if (buckets.size === 0) return [];
 
-  // Compact window ending at the latest timed fill's bucket B_max: keep only
+  // Compact window ending at the latest point's bucket B_max: keep only
   // buckets `>= B_max − (limit−1)×intervalMs` (at most `limit` bucket starts).
   let maxBucket = -Infinity;
   for (const bucket of buckets.keys()) if (bucket > maxBucket) maxBucket = bucket;

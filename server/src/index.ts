@@ -14,6 +14,7 @@ import { createFaucet } from "./faucet.js";
 import { createIndexer } from "./indexer.js";
 import { createKeeper } from "./keeper.js";
 import { createOperator } from "./operator.js";
+import { createMarkSampler } from "./sampler.js";
 import { computeBook, computeMarket, computePortfolio } from "./state.js";
 import { attachWs } from "./ws.js";
 
@@ -43,6 +44,11 @@ async function main(): Promise<void> {
     keypairPath: config.operatorKeypairPath,
   });
   const faucet = createFaucet({ config, connection, db });
+
+  // product-v3 candles v2: sample the reference price (book mid → pool-rate
+  // index → last trade) on a fixed cadence so the candle series advances even
+  // when no orders or trades exist.
+  const sampler = createMarkSampler({ db, market, intervalMs: config.markSampleIntervalMs });
 
   // The operator PUBLIC key is all `/bind/prepare` needs (the secret stays in
   // the operator service, R-3); resolved lazily from the configured path and
@@ -125,6 +131,7 @@ async function main(): Promise<void> {
     console.error(`fructus-server: indexer start failed: ${err instanceof Error ? err.message : String(err)}`);
   });
   keeper.start();
+  sampler.start();
 
   // D-13: expired `auth_nonces` rows have no reader — sweep them once at boot
   // and then hourly on an unref'd timer so the challenge table cannot grow
@@ -149,6 +156,7 @@ async function main(): Promise<void> {
     console.log(`fructus-server: ${signal} received — shutting down`);
     clearInterval(nonceSweep);
     keeper.stop();
+    sampler.stop();
     await Promise.allSettled([indexer.stop(), ws.close(), api.close()]);
     db.close();
     process.exit(0);

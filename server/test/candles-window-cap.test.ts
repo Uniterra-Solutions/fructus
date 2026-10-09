@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CANDLES_FILLS_SCAN_LIMIT } from "../src/api.js";
 import { openDb } from "../src/db.js";
-import { aggregateCandles } from "../src/market-data.js";
+import { aggregateCandles, fillPoints } from "../src/market-data.js";
 
 const MARKET = "Market1111111111111111111111111111111111111";
 // Bucket width and origin chosen so seq 100_000 ends bucket 16_999 and seq
@@ -52,7 +52,7 @@ test(
         "the NEWEST rows survive truncation, ascending",
       );
 
-      const candles = aggregateCandles(fills, INTERVAL_MS, 3);
+      const candles = aggregateCandles(fillPoints(fills), INTERVAL_MS, 3);
       assert.equal(candles.length, 2, "empty buckets are not served");
       assert.equal(
         BigInt(candles[candles.length - 1]?.timeMs ?? "0"),

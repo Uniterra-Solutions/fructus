@@ -17,8 +17,6 @@ import {
   buildPlaceLimitOrder,
 } from "fructus-sdk/src/index.js";
 import type { ApiResponse, CandlesResponse, TradeView, TradesResponse } from "fructus-sdk/src/api.js";
-import { aggregateCandles } from "../src/market-data.js";
-import type { FillRow } from "../src/db.js";
 import {
   createMint,
   fundTrader,
@@ -160,38 +158,52 @@ test("KLINE-TRADES-E2E-TRUTH: the trades served from a live cross match the inde
   assert.equal(head.size, N.toString());
 });
 
-test("KLINE-CANDLES-E2E-TRUTH: candles served from a live indexed cross equal the pure aggregation of the indexed fills, timed, at the requested interval", async () => {
+test("KLINE-CANDLES-E2E-TRUTH: the served series is continuous (one candle per interval while the server samples), carries the seeded crossings' volume/trades, and limit=1 serves the latest bucket", async () => {
   assert.ok(indexed, "the indexer must serve the two seeded fills on /market/trades");
-  const trades = await fetchTrades(200);
-  const fills: FillRow[] = trades.map((trade) => ({
-    seq: Number(trade.seq),
-    slot: Number(trade.slot),
-    market: market.market.toBase58(),
-    owner: trade.owner,
-    side: trade.side,
-    price: trade.price,
-    size: trade.size,
-    timeMs: trade.timeMs === null ? null : Number(trade.timeMs),
-  }));
-
   for (const [interval, intervalMs] of [
     ["1m", 60_000],
     ["1d", 86_400_000],
   ] as const) {
-    const expected = aggregateCandles(fills, intervalMs, 300);
-    assert.ok(expected.length >= 1, "generator sanity: the seeded fills form at least one bucket");
-
     const { status, body } = await getJson(`/market/candles?interval=${interval}&limit=300`);
     assert.equal(status, 200, `GET /market/candles?interval=${interval} must answer 200 (got ${status})`);
     assert.ok(body !== null && body.ok === true, "candles must use the success envelope");
     const candles = (body as { ok: true; data: CandlesResponse }).data.candles;
-    assert.deepEqual(candles, expected, `served candles must equal the pure aggregation (interval ${interval})`);
+    assert.ok(candles.length >= 1, `the sampled series serves at least the current bucket (interval ${interval})`);
+
+    // Continuity: while the server samples (5 s), consecutive buckets sit
+    // exactly one interval apart — the series never skips a bucket.
+    for (let i = 1; i < candles.length; i += 1) {
+      assert.equal(
+        Number(candles[i].timeMs) - Number(candles[i - 1].timeMs),
+        intervalMs,
+        `interval ${interval}: bucket ${i} must sit exactly one interval after its predecessor`,
+      );
+    }
+    // OHLC envelope ordering per candle.
+    for (const candle of candles) {
+      assert.ok(
+        BigInt(candle.low) <= BigInt(candle.open) && BigInt(candle.open) <= BigInt(candle.high),
+        `interval ${interval}: low ≤ open ≤ high (${JSON.stringify(candle)})`,
+      );
+      assert.ok(
+        BigInt(candle.low) <= BigInt(candle.close) && BigInt(candle.close) <= BigInt(candle.high),
+        `interval ${interval}: low ≤ close ≤ high (${JSON.stringify(candle)})`,
+      );
+    }
+    // The two seeded crossings survive inside the served window.
+    const totalVolume = candles.reduce((sum, candle) => sum + BigInt(candle.volume), 0n);
+    const totalTrades = candles.reduce((sum, candle) => sum + candle.trades, 0);
+    assert.equal(totalTrades, 2, `interval ${interval}: the two seeded crossings are counted`);
+    assert.equal(totalVolume, 2n * N, `interval ${interval}: their sizes sum into the served volume`);
 
     const one = await getJson(`/market/candles?interval=${interval}&limit=1`);
     assert.equal(one.status, 200);
     const oneCandles = ((one.body as { ok: true; data: CandlesResponse }).data ?? { candles: [] }).candles;
     assert.equal(oneCandles.length, 1, "limit=1 serves exactly the latest bucket");
-    assert.deepEqual(oneCandles[0], expected[expected.length - 1], "the single candle is the latest bucket");
+    assert.ok(
+      Number(oneCandles[0].timeMs) >= Number(candles[candles.length - 1].timeMs),
+      "the single candle is the latest bucket (never an older one)",
+    );
   }
 });
 
