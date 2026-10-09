@@ -1,0 +1,16 @@
+[Unit]
+Description=Fructus backend server (REST + WS on 127.0.0.1:8787)
+After=network-online.target fructus-devstack.service
+Wants=fructus-devstack.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/data/fructus/server
+EnvironmentFile=-/root/data/fructus/deploy/server.env
+Environment=HOME=/root
+ExecStart=/usr/local/bin/node /root/data/fructus/server/node_modules/tsx/dist/cli.mjs src/index.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

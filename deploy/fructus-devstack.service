@@ -1,0 +1,15 @@
+[Unit]
+Description=Fructus local devstack (solana-test-validator + program + market init)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/data/fructus/deploy/run-devstack.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
