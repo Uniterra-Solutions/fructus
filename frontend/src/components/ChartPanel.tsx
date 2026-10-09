@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from "react";
 import type { CandleView, MarketView } from "fructus-sdk/src/api.js";
+import { formatAmount } from "../lib/amount.js";
 import { CANDLE_INTERVALS, type CandleInterval } from "../lib/candles.js";
 import { createChartController, type ChartController } from "../chart/controller.js";
 import { useLocale } from "../i18n/index.js";
@@ -27,6 +28,7 @@ export function ChartPanel({
   market = null,
 }: ChartPanelProps) {
   const { t } = useLocale();
+  const last = candles[candles.length - 1];
   const containerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<ChartController | null>(null);
   const candlesRef = useRef<CandleView[]>(candles);
@@ -77,7 +79,44 @@ export function ChartPanel({
           ))}
         </div>
       </header>
-      <div ref={containerRef} data-testid="chart-container" className="h-64 w-full rounded bg-base" />
+      <div className="relative">
+        <div
+          data-testid="chart-legend"
+          className="pointer-events-none absolute left-2 top-1.5 z-10 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px]"
+        >
+          <span className="text-muted">Fructus · {interval}</span>
+          {last !== undefined && (
+            <>
+              <span className="text-muted">
+                O <span className="text-ink">{formatAmount(last.open)}</span>
+              </span>
+              <span className="text-muted">
+                H <span className="text-ink">{formatAmount(last.high)}</span>
+              </span>
+              <span className="text-muted">
+                L <span className="text-ink">{formatAmount(last.low)}</span>
+              </span>
+              <span className="text-muted">
+                C{" "}
+                <span className={Number(last.close) >= Number(last.open) ? "text-up" : "text-down"}>
+                  {formatAmount(last.close)}
+                </span>
+              </span>
+            </>
+          )}
+          {market !== null && (
+            <>
+              <span className="text-[#f5a623]">
+                {t("market.mark")} {market.mark === null ? "—" : formatAmount(market.mark)}
+              </span>
+              <span className="text-[#6b7cff]">
+                {t("market.index")} {formatAmount(market.index)}
+              </span>
+            </>
+          )}
+        </div>
+        <div ref={containerRef} data-testid="chart-container" className="h-64 w-full rounded bg-base" />
+      </div>
       <p className="mt-2 text-[10px] text-muted">
         {candles.length} · {interval}
       </p>

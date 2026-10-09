@@ -1,14 +1,15 @@
-//! lightweight-charts controller (candles + volume + mark trail + index line):
-//! bootstrap/refresh through the injected `fetchCandles`, live trades folded
-//! under the current interval, a dashed mark trail that follows the served
-//! series up to the latest price, and a createPriceLine index overlay.
+//! lightweight-charts controller, standard TV layout (candles + volume
+//! sub-pane + mark/index price lines): bootstrap/refresh through the injected
+//! `fetchCandles`, live trades folded under the current interval, the volume
+//! histogram in its own bottom pane (so the price pane autoscales to the
+//! candles alone), and mark/index as labeled dashed price lines.
 
 import {
   CandlestickSeries,
   HistogramSeries,
-  LineSeries,
   LineStyle as ChartLineStyle,
   createChart,
+  type CreatePriceLineOptions,
   type IPriceLine,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -29,7 +30,7 @@ export interface ChartController {
   setCandles(candles: CandleView[]): void;
   /** Fold a live trade into the chart. */
   onTrade(trade: TradeView): void;
-  /** Index horizontal line (`null` index → hidden); the mark trail follows the series. */
+  /** Mark/index price lines from `market` (`null` level → hidden). */
   setMarkLines(market: MarketView | null): void;
   destroy(): void;
 }
@@ -38,6 +39,10 @@ export interface ChartController {
 const PRICE_SCALE = 1e6;
 
 const DEFAULT_INTERVAL: CandleInterval = "1m";
+
+/** Price pane vs volume pane height ratio (standard TV layout). */
+const PRICE_PANE_STRETCH = 4;
+const VOLUME_PANE_STRETCH = 1;
 
 interface CandlePoint {
   time: UTCTimestamp;
@@ -50,17 +55,11 @@ interface CandlePoint {
 interface VolumePoint {
   time: UTCTimestamp;
   value: number;
-}
-
-interface MarkPoint {
-  time: UTCTimestamp;
-  value: number;
-}
-
-interface LineStyle {
+  /** Candle-direction tint; volume must never read as a candle body. */
   color: string;
-  title: string;
 }
+
+type PriceLineStyle = Pick<CreatePriceLineOptions, "color" | "title" | "lineStyle" | "lineWidth">;
 
 function toPrice(raw: string): number {
   return Number(raw) / PRICE_SCALE;
@@ -81,12 +80,12 @@ function toCandlePoint(candle: CandleView): CandlePoint {
 }
 
 function toVolumePoint(candle: CandleView): VolumePoint {
-  return { time: toTime(candle.timeMs), value: toPrice(candle.volume) };
-}
-
-/** The mark trail point: the served series' close (the sampled reference price). */
-function toMarkPoint(candle: CandleView): MarkPoint {
-  return { time: toTime(candle.timeMs), value: toPrice(candle.close) };
+  const up = Number(candle.close) >= Number(candle.open);
+  return {
+    time: toTime(candle.timeMs),
+    value: toPrice(candle.volume),
+    color: up ? "rgba(38, 166, 154, 0.6)" : "rgba(239, 83, 80, 0.6)",
+  };
 }
 
 export function createChartController(opts: ChartControllerOptions): ChartController {
@@ -94,6 +93,7 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
   let candles: CandleView[] = [];
   let fetchSeq = 0;
   let destroyed = false;
+  let markLine: IPriceLine | null = null;
   let indexLine: IPriceLine | null = null;
 
   const chart = createChart(opts.container, {
@@ -104,12 +104,19 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       background: { color: "transparent" },
       textColor: "#8b95a7",
       attributionLogo: false,
+      panes: { separatorColor: "rgba(139, 149, 167, 0.2)", enableResize: false },
     },
     grid: {
       vertLines: { color: "rgba(139, 149, 167, 0.12)" },
       horzLines: { color: "rgba(139, 149, 167, 0.12)" },
     },
-    rightPriceScale: { borderColor: "rgba(139, 149, 167, 0.2)" },
+    // Autoscale the price pane to the visible candles (light top/bottom
+    // margin); the volume pane carries its own scale.
+    rightPriceScale: {
+      borderColor: "rgba(139, 149, 167, 0.2)",
+      autoScale: true,
+      scaleMargins: { top: 0.08, bottom: 0.08 },
+    },
     // Fixed bar width: the series scrolls like a terminal instead of
     // fitContent stretching a handful of samples across the whole pane.
     timeScale: {
@@ -127,34 +134,26 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
     borderVisible: false,
     wickUpColor: "#26a69a",
     wickDownColor: "#ef5350",
-  });
-
-  const volumeSeries = chart.addSeries(HistogramSeries, {
-    priceScaleId: "",
-    priceFormat: { type: "volume" },
-    lastValueVisible: false,
+    // Only the explicit mark/index price lines are drawn as levels.
     priceLineVisible: false,
   });
 
-  // Dashed orange trail over the served closes: the mark, extended to the
-  // latest price — never a full-width horizontal line.
-  const markSeries = chart.addSeries(LineSeries, {
-    color: "#f5a623",
-    lineWidth: 1,
-    lineStyle: ChartLineStyle.Dashed,
-    priceLineVisible: false,
-    lastValueVisible: false,
-    crosshairMarkerVisible: false,
-  });
+  // Standard TV layout: volume rides its own bottom pane — the price pane
+  // then autoscales to the candles alone (no giant overlay bars).
+  const volumeSeries = chart.addSeries(
+    HistogramSeries,
+    { priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false },
+    1,
+  );
+  const panes = chart.panes();
+  panes[0]?.setStretchFactor(PRICE_PANE_STRETCH);
+  panes[1]?.setStretchFactor(VOLUME_PANE_STRETCH);
 
   function applyCandles(next: CandleView[]): void {
     candles = next;
     candleSeries.setData(next.map(toCandlePoint));
-    // Zero-volume buckets paint hairline dashes on the histogram baseline;
-    // keep the volume series sparse (print buckets only) so the flat sampled
-    // minutes stay clean.
+    // Prints only: zero-volume buckets would dash the histogram baseline.
     volumeSeries.setData(next.filter((candle) => Number(candle.volume) > 0).map(toVolumePoint));
-    markSeries.setData(next.map(toMarkPoint));
   }
 
   function load(target: CandleInterval): void {
@@ -178,7 +177,7 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
     );
   }
 
-  function syncPriceLine(line: IPriceLine | null, price: number | null, style: LineStyle): IPriceLine | null {
+  function syncPriceLine(line: IPriceLine | null, price: number | null, style: PriceLineStyle): IPriceLine | null {
     if (price === null || !Number.isFinite(price)) {
       line?.applyOptions({ lineVisible: false, axisLabelVisible: false });
       return line;
@@ -212,18 +211,30 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       if (last === undefined) return;
       candleSeries.update(toCandlePoint(last));
       if (Number(last.volume) > 0) volumeSeries.update(toVolumePoint(last));
-      markSeries.update(toMarkPoint(last));
     },
     setMarkLines(market) {
       if (destroyed) return;
+      const mark = market !== null && market.mark !== null ? toPrice(market.mark) : null;
       const index = market !== null ? toPrice(market.index) : null;
-      indexLine = syncPriceLine(indexLine, index, { color: "#6b7cff", title: "Index" });
+      markLine = syncPriceLine(markLine, mark, {
+        color: "#f5a623",
+        title: "Mark",
+        lineStyle: ChartLineStyle.Dashed,
+        lineWidth: 1,
+      });
+      indexLine = syncPriceLine(indexLine, index, {
+        color: "#6b7cff",
+        title: "Index",
+        lineStyle: ChartLineStyle.Dotted,
+        lineWidth: 1,
+      });
     },
     destroy() {
       if (destroyed) return;
       destroyed = true;
       fetchSeq += 1;
       candles = [];
+      markLine = null;
       indexLine = null;
       chart.remove();
     },

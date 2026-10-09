@@ -151,7 +151,7 @@ export interface HistoryResponse {
 
 /** `GET /market` snapshot. */
 export interface MarketView {
-  /** Mark rate (mid or TWAP fallback); `null` until a two-sided book exists. */
+  /** The latest indexed fill price (last trade print); `null` until the first fill. */
   mark: string | null;
   /** Trustless index rate from the stake-pool exchange rate. */
   index: string;

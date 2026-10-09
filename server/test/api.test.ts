@@ -510,7 +510,14 @@ test("API-READS-SERVE-INDEXED-TRUTH: /me, /me/positions, /market, /market/book e
   );
   assert.equal(market.bestBid, RESTING_BID_PRICE.toString(), "GET /market.bestBid must be the seeded resting bid price");
   assert.equal(market.bestAsk, null, "a one-sided book has no best ask — `null`, not a zero string (sdk/src/api.ts)");
-  assert.equal(market.mark, null, "one-sided book ⇒ no mid ⇒ mark null (sdk/src/api.ts)");
+  // The mark is the latest indexed fill price: the scenario's taker open
+  // crossed the counterparty ask at COUNTERPARTY_ASK_PRICE (that ask is now
+  // consumed), so the serving contract pins exactly that fill.
+  assert.equal(
+    market.mark,
+    COUNTERPARTY_ASK_PRICE.toString(),
+    "GET /market.mark must equal the latest indexed fill price (sdk/src/api.ts)",
+  );
 
   // --- GET /market/book ---
   const book = expectOk<BookView>(await call(s.server, "GET", "/market/book"), `GET /market/book [${note}]`);

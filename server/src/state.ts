@@ -13,7 +13,6 @@ import {
   decodePosition,
   decodeUserCollateral,
   marginRequired,
-  mid,
   operatorPda,
   orderBookPda,
   pnl,
@@ -132,14 +131,17 @@ export function computeMarket(db: Db, market: PublicKey): MarketView {
 
   const bookRow = decoded(db, "order_book", orderBookPda(market).address.toBase58());
   const book = bookRow === null ? null : decodeOrderBook(bookRow);
-  // On-chain, an empty side caches `best_bid`/`best_ask` as 0 and the mid
-  // requires BOTH sides (`orderbook::mid`) — the DTO surfaces both as `null`.
+  // On-chain, an empty side caches `best_bid`/`best_ask` as 0 — the DTO
+  // surfaces both as `null`.
   const bestBidValue = book?.bestBid ?? 0n;
   const bestAskValue = book?.bestAsk ?? 0n;
-  const mark = mid(bestBidValue, bestAskValue);
+  // The mark is the latest indexed fill price (the last trade print). The book
+  // mid is pinned by the maker's own quotes and would never move; `null` until
+  // the first fill.
+  const mark = db.latestFillPrice(market.toBase58());
 
   return {
-    mark: mark === null ? null : mark.toString(),
+    mark,
     // The trustless index level: the market's last-settlement stake-pool rate
     // (`index_n`/`index_d`) scaled to the 1e6 price convention. `0` marks an
     // un-set baseline (no settlement yet) — see `indexLevel`.
@@ -163,15 +165,15 @@ export function indexLevel(marketState: PerpMarketState): bigint {
 }
 
 /**
- * One mark sample for the candle series (product-v3 candles v2): the book mid,
- * else the pool-rate index, else the last trade — so the series keeps printing
- * while the book is one-sided or empty. `null` = no price source yet.
+ * One mark sample for the candle series (product-v3 candles v2): the latest
+ * trade print, else the pool-rate index — so the series keeps printing while
+ * the market is quiet. `null` = no price source yet. The book mid is
+ * deliberately NOT a source: the maker's own quotes pin it and it never moves.
  */
 export function samplePrice(db: Db, market: PublicKey): string | null {
   const view = computeMarket(db, market);
   if (view.mark !== null) return view.mark;
-  if (view.index !== "0") return view.index;
-  return db.latestFillPrice(market.toBase58());
+  return view.index !== "0" ? view.index : null;
 }
 
 /** L2 book view (REQ-B-3/B-7): `[price, size]` levels, best first. */

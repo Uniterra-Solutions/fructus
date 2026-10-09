@@ -26,6 +26,7 @@ const fakes = vi.hoisted(() => {
     remove: vi.fn(),
     applyOptions: vi.fn(),
     timeScale: () => ({ fitContent: vi.fn() }),
+    panes: () => [{ setStretchFactor: vi.fn() }, { setStretchFactor: vi.fn() }],
   };
   return { fakeChart, candleSeries, otherSeries, candlesDef, otherDef };
 });
@@ -35,6 +36,7 @@ vi.mock("lightweight-charts", () => ({
   CandlestickSeries: fakes.candlesDef,
   LineSeries: fakes.otherDef,
   HistogramSeries: fakes.otherDef,
+  LineStyle: { Solid: 0, Dotted: 1, Dashed: 2 },
 }));
 
 /** Drain microtasks + a few macrotask turns so fetch promises settle deterministically. */
