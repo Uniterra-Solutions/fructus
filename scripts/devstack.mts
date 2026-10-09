@@ -42,6 +42,7 @@ import {
   PROGRAM_ID,
   STAKE_POOL_PROGRAM_ID,
   USDC_DECIMALS,
+  buildDepositCollateral,
   buildInitializeCollateralVault,
   buildInitializeMarket,
   buildInitializeOrderBook,
@@ -80,6 +81,13 @@ const AUTHORITY_SOL = 120;
 const WALLET_SOL = 10;
 /** tUSDC minted to each funded wallet (raw 6-dp microunits). */
 const WALLET_TUSDC = 100_000_000_000n; // 100,000 tUSDC
+/**
+ * Protocol collateral the MM deposits at boot (F2 fix): the MM quotes as a
+ * maker, and a maker fill can only settle (`settle_fill`) against the maker's
+ * on-protocol collateral — without this deposit every MM fill starves the
+ * keeper with `InsufficientFreeCollateral` until the event ring wraps.
+ */
+const MM_COLLATERAL = 50_000_000_000n; // half the MM's tUSDC — maker-margin headroom
 
 // ---------------------------------------------------------------------------
 // Env-block printer (pure; pinned by scripts/test/devstack-env.test.ts)
@@ -608,14 +616,34 @@ async function boot(): Promise<void> {
     ["operator", operator],
     ["mm", mm],
   ];
+  const atas = new Map<string, PublicKey>();
   for (const [label, keypair] of wallets) {
     await airdrop(connection, keypair.publicKey, WALLET_SOL);
     const ata = await ensureAta(connection, mint, keypair.publicKey, authorityPath, configPath, label);
     mintTo(mint, ata, WALLET_TUSDC, configPath);
+    atas.set(label, ata);
     console.log(
       `[devstack] ${label} ${keypair.publicKey.toBase58()} funded: ${WALLET_SOL} SOL + ${WALLET_TUSDC} tUSDC → ${ata.toBase58()}`,
     );
   }
+
+  // 6b. MM protocol collateral (F2): deposit into the market so the MM's maker
+  //     fills can settle — see MM_COLLATERAL above.
+  const mmAta = atas.get("mm");
+  if (!mmAta) throw new Error("mm ATA missing after funding");
+  await submit(
+    connection,
+    buildDepositCollateral({
+      user: mm.publicKey,
+      market,
+      userAta: mmAta,
+      collateralMint: mint,
+      amount: MM_COLLATERAL,
+      programId: PROGRAM_ID,
+    }),
+    mm,
+  );
+  console.log(`[devstack] mm collateral deposited: ${MM_COLLATERAL} raw tUSDC → market ${market.toBase58()}`);
 
   // 7. Print the copy-paste env blocks, then keep running until a signal.
   const values: DevstackValues = {
