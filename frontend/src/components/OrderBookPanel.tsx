@@ -15,6 +15,9 @@ export function OrderBookPanel({ book, onPriceSelect }: OrderBookPanelProps) {
   const bids = book !== null ? book.bids : [];
   const asks = book !== null ? book.asks : [];
   const empty = bids.length === 0 && asks.length === 0;
+  // Display convention: bids best-first (descending), asks mirrored high→low
+  // so the spread sits between the two sides (the wire order is best-first).
+  const asksDescending = [...asks].reverse();
 
   return (
     <section data-testid="book-panel" className="flex min-w-0 flex-col rounded border border-line bg-panel p-3">
@@ -31,7 +34,7 @@ export function OrderBookPanel({ book, onPriceSelect }: OrderBookPanelProps) {
         </div>
       ) : (
         <div className="flex flex-col gap-0.5">
-          {asks.map(([price, size], index) => (
+          {asksDescending.map(([price, size], index) => (
             <button
               key={`ask-${index}`}
               type="button"

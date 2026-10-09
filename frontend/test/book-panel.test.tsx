@@ -21,14 +21,17 @@ function textsOf(el: HTMLElement): string[] {
   return texts.filter((text) => text.length > 0);
 }
 
-it(`BOOK-PANEL-RENDERS-AND-PREFILLS: given a BookView the rows show formatted values best-first and a click hands the raw price to the form`, () => {
+it(`BOOK-PANEL-RENDERS-AND-PREFILLS: given a BookView the rows show formatted values (bids best-first, asks high→low) and a click hands the raw price to the form`, () => {
   const spy = vi.fn();
   const book: BookView = {
     bids: [
       ["1000000", "500000"],
       ["999000", "1000000"],
     ],
-    asks: [["1001000", "700000"]],
+    asks: [
+      ["1001000", "700000"],
+      ["1002000", "800000"],
+    ],
   };
   render(<OrderBookPanel book={book} onPriceSelect={spy} />);
 
@@ -37,8 +40,8 @@ it(`BOOK-PANEL-RENDERS-AND-PREFILLS: given a BookView the rows show formatted va
   if (bids.length < 2) return;
 
   const asks = screen.queryAllByTestId("book-ask");
-  expect(asks.length).toBe(1);
-  if (asks.length < 1) return;
+  expect(asks.length).toBe(2);
+  if (asks.length < 2) return;
 
   // Best-first: the 1000000 bid renders formatted ("1" price, "0.5" size), never raw.
   const firstBidJoined = textsOf(bids[0]).join(" | ");
@@ -51,13 +54,14 @@ it(`BOOK-PANEL-RENDERS-AND-PREFILLS: given a BookView the rows show formatted va
   // Input order is preserved: the 999000 level is the second row (formats to "0.999").
   expect(textsOf(bids[1]).join(" | ")).toContain("0.999");
 
-  // Ask side formats the same way.
+  // Asks render high→low (mirror of the best-first wire order): 1002000 first.
   const firstAskJoined = textsOf(asks[0]).join(" | ");
-  expect(firstAskJoined).toContain("1.001");
-  expect(firstAskJoined).toContain("0.7");
+  expect(firstAskJoined).toContain("1.002");
+  expect(firstAskJoined).toContain("0.8");
   const firstAskRaw = asks[0].textContent ?? "";
-  expect(firstAskRaw).not.toContain("1001000");
-  expect(firstAskRaw).not.toContain("700000");
+  expect(firstAskRaw).not.toContain("1002000");
+  expect(firstAskRaw).not.toContain("800000");
+  expect(textsOf(asks[1]).join(" | ")).toContain("1.001");
 
   // Click prefill: RAW price string + side (bid → 0 long, ask → 1 short).
   fireEvent.click(bids[0]);
@@ -65,7 +69,7 @@ it(`BOOK-PANEL-RENDERS-AND-PREFILLS: given a BookView the rows show formatted va
   expect(spy).toHaveBeenCalledWith("1000000", 0);
 
   spy.mockClear();
-  fireEvent.click(asks[0]);
+  fireEvent.click(asks[1]);
   expect(spy).toHaveBeenCalledTimes(1);
   expect(spy).toHaveBeenCalledWith("1001000", 1);
 
