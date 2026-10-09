@@ -14,9 +14,13 @@
 //! re-places it around the new anchor immediately; unchanged prices are a
 //! no-op. The crossing constraint is evaluated against OTHER makers' orders
 //! only (own orders are cancelled first, so they must not block the new
-//! ladder). One tx per instruction, signed with the bot keypair and
-//! confirmed; log one summary line. Per-cycle errors are logged and the loop
-//! continues; SIGINT stops.
+//! ladder). The requote is ONE transaction — every cancel, then every place —
+//! signed with the bot keypair once and confirmed once, so the ladder
+//! switches old→new wholesale (atomic), never torn. Worst case (8 levels/
+//! side): 16 cancels + 16 places = 32 instructions ≈ 1126 bytes, inside the
+//! 1232-byte legacy packet limit (pinned by test/mm-bot-batch.test.ts). Log
+//! one summary line. Per-cycle errors are logged and the loop continues;
+//! SIGINT stops.
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -49,6 +53,7 @@ import {
   resolveAnchor,
   type OwnOrder,
   type QuoteParams,
+  type RequotePlan,
 } from "./mm-lib.mjs";
 
 // ---------------------------------------------------------------------------
@@ -153,18 +158,32 @@ async function readIndexLevel(
   return (rate.totalLamports * APY_SCALE) / rate.poolTokenSupply;
 }
 
-/** Submit one instruction (sign + send + confirm `confirmed`) and return its signature. */
-async function submitIx(
+/** Legacy transaction packet limit: 1280-byte MTU − 40 (IPv6 header) − 8 (UDP header). */
+const MAX_PACKET_SIZE = 1232;
+
+/**
+ * Sign + submit the whole requote batch as ONE transaction and confirm
+ * `confirmed`. The batch is atomic: either the ladder switches wholesale or
+ * nothing changes. The size guard is structural (an 8-level requote is 32
+ * instructions ≈ 1126 bytes); it throws a clear error rather than letting the
+ * RPC reject an oversize packet opaquely.
+ */
+async function submitRequote(
   connection: Connection,
-  instruction: TransactionInstruction,
+  tx: Transaction,
   bot: Keypair,
 ): Promise<string> {
-  const tx = new Transaction().add(instruction);
-  tx.feePayer = bot.publicKey;
   const latest = await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = latest.blockhash;
   tx.sign(bot);
-  const signature = await connection.sendRawTransaction(tx.serialize(), {
+  const wire = tx.serialize();
+  if (wire.length > MAX_PACKET_SIZE) {
+    throw new Error(
+      `requote batch does not fit one transaction: ${wire.length} > ${MAX_PACKET_SIZE} bytes ` +
+        `(${tx.instructions.length} instructions)`,
+    );
+  }
+  const signature = await connection.sendRawTransaction(wire, {
     skipPreflight: false,
     preflightCommitment: "confirmed",
   });
@@ -176,6 +195,51 @@ async function submitIx(
     throw new Error(`transaction ${signature} failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
   }
   return signature;
+}
+
+// ---------------------------------------------------------------------------
+// Requote batch assembly (pure — pinned by test/mm-bot-batch.test.ts)
+// ---------------------------------------------------------------------------
+
+export interface RequoteKeys {
+  market: PublicKey;
+  orderBook: PublicKey;
+  indexSource: PublicKey;
+  owner: PublicKey;
+}
+
+/**
+ * Assemble one cycle's requote as ONE transaction: every cancel first (free
+ * book capacity and drop the bot's own stale orders), then every place (the
+ * new ladder, plan order). `null` for an empty plan — a no-op cycle submits
+ * nothing, never an empty transaction.
+ */
+export function buildRequoteTransaction(plan: RequotePlan, keys: RequoteKeys): Transaction | null {
+  if (plan.cancels.length === 0 && plan.places.length === 0) return null;
+  const instructions: TransactionInstruction[] = [
+    ...plan.cancels.map((order) =>
+      buildCancelOrder({
+        market: keys.market,
+        orderBook: keys.orderBook,
+        owner: keys.owner,
+        seq: BigInt(order.seq),
+      }),
+    ),
+    ...plan.places.map((quote) =>
+      buildPlaceLimitOrder({
+        market: keys.market,
+        orderBook: keys.orderBook,
+        indexSource: keys.indexSource,
+        owner: keys.owner,
+        side: quote.side,
+        price: BigInt(quote.price),
+        size: BigInt(quote.size),
+      }),
+    ),
+  ];
+  const tx = new Transaction().add(...instructions);
+  tx.feePayer = keys.owner;
+  return tx;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,42 +280,22 @@ async function runCycle(ctx: BotContext): Promise<void> {
   const plan = planRequote(own, desired);
 
   let submitted = 0;
-  const failures: string[] = [];
-  for (const cancel of plan.cancels) {
+  let failure: string | null = null;
+  let signature: string | null = null;
+
+  // ONE transaction per cycle: all cancels, then all places — atomic.
+  const tx = buildRequoteTransaction(plan, {
+    market: ctx.market,
+    orderBook: ctx.orderBook,
+    indexSource: market.indexSource,
+    owner: ctx.bot.publicKey,
+  });
+  if (tx !== null) {
     try {
-      await submitIx(
-        ctx.connection,
-        buildCancelOrder({
-          market: ctx.market,
-          orderBook: ctx.orderBook,
-          owner: ctx.bot.publicKey,
-          seq: BigInt(cancel.seq),
-        }),
-        ctx.bot,
-      );
-      submitted++;
+      signature = await submitRequote(ctx.connection, tx, ctx.bot);
+      submitted = plan.cancels.length + plan.places.length;
     } catch (err) {
-      failures.push(`cancel seq=${cancel.seq}: ${errorMessage(err)}`);
-    }
-  }
-  for (const quote of plan.places) {
-    try {
-      await submitIx(
-        ctx.connection,
-        buildPlaceLimitOrder({
-          market: ctx.market,
-          orderBook: ctx.orderBook,
-          indexSource: market.indexSource,
-          owner: ctx.bot.publicKey,
-          side: quote.side,
-          price: BigInt(quote.price),
-          size: BigInt(quote.size),
-        }),
-        ctx.bot,
-      );
-      submitted++;
-    } catch (err) {
-      failures.push(`place ${quote.side}:${quote.price}: ${errorMessage(err)}`);
+      failure = errorMessage(err);
     }
   }
 
@@ -259,10 +303,10 @@ async function runCycle(ctx: BotContext): Promise<void> {
     `[mm] cycle anchor=${anchor} ownOrders=${own.length} ` +
     `cancels=${plan.cancels.length} places=${plan.places.length} submitted=${submitted} ` +
     `mark=${mark ?? "null"} index=${index ?? "null"} mid=${mid ?? "null"}`;
-  if (failures.length === 0) {
-    console.log(summary);
+  if (failure === null) {
+    console.log(signature === null ? summary : `${summary} sig=${signature}`);
   } else {
-    console.error(`${summary} errors=${failures.length} first="${failures[0]}"`);
+    console.error(`${summary} errors=1 first="${failure}"`);
   }
 }
 
