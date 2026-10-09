@@ -26,7 +26,6 @@ import {
   buildOperatorClosePosition,
   buildOperatorDepositCollateral,
   buildOperatorOpenPosition,
-  buildOperatorPlaceLimitOrder,
   buildOperatorWithdrawCollateral,
   decodePerpMarket,
   marketPda,
@@ -303,26 +302,20 @@ export function createOperator(opts: OperatorOptions): OperatorService {
 
     executeOrder(user, order) {
       return runAction(user, "order", ({ operator, user: wallet, marketState: state }) => {
+        let price = 0n;
         if (order.kind === "limit") {
           if (order.price === undefined) {
             throw new BadRequestError("limit orders require a price");
           }
-          return buildOperatorPlaceLimitOrder({
-            operator,
-            user: wallet,
-            market,
-            indexSource: state.indexSource,
-            side: order.side,
-            price: order.price,
-            size: order.size,
-            programId,
-          });
+          price = order.price;
         }
-        // A market order is the taker ENTRY for the subject: the program grows
-        // a position only through `open_position` / `operator_open_position`
-        // (the `place_*` handlers are book-only and never touch the margin
-        // ledger). The walk's OPEN step pins this route to the operator open
-        // path with a market taker (`price 0` ⇒ IOC).
+        // F1 · CROSSING-LIMIT-BOOKS-TAKER: BOTH kinds submit through
+        // `operator_open_position` — the program's `match_open_taker` makes a
+        // market order an IOC (`price 0`), rests a non-crossing limit, and
+        // books the subject's position + margin inline when a limit crosses.
+        // The previous limit path (`buildOperatorPlaceLimitOrder`) was
+        // book-only: a crossing limit filled against the makers' orders but
+        // never grew the taker's position (measured live on the devstack).
         return buildOperatorOpenPosition({
           operator,
           user: wallet,
@@ -330,7 +323,7 @@ export function createOperator(opts: OperatorOptions): OperatorService {
           indexSource: state.indexSource,
           side: order.side,
           size: order.size,
-          price: 0n,
+          price,
           programId,
         });
       });
