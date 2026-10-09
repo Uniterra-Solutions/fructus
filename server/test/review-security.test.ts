@@ -273,7 +273,7 @@ async function makeServer(opts: MakeServerOptions = {}): Promise<InProcessServer
     market: Keypair.generate().publicKey,
     getOperatorPubkey: opts.getOperatorPubkey ?? (() => Keypair.generate().publicKey),
     getPortfolio: opts.getPortfolio ?? ((wallet) => makePortfolio(wallet.toBase58(), "0")),
-    getMarket: () => ({ mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
+    getMarket: () => ({ mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
     getBook: () => ({ bids: [], asks: [] }),
   });
   const port = await api.start(0);
@@ -756,7 +756,7 @@ test("SEC-WS-TOKEN-GATE: the push channel closes unauthenticated sockets with 44
     market: Keypair.generate().publicKey,
     computePortfolio: (wallet) => makePortfolio(wallet.toBase58(), "0"),
     computeBook: () => ({ bids: [], asks: [] }),
-    computeMarket: () => ({ mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
+    computeMarket: () => ({ mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
   });
   const port = await new Promise<number>((resolve) => {
     httpServer.listen(0, "127.0.0.1", () => {

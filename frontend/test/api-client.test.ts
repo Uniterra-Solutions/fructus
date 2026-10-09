@@ -132,7 +132,7 @@ const ROWS: Row[] = [
     method: "GET",
     auth: null,
     call: (client) => client.market(),
-    payload: { mark: null, index: "1000000000", fundingAccumulator: "0", bestBid: null, bestAsk: null },
+    payload: { mark: null, index: "1000000000", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null },
   },
   {
     name: "book",

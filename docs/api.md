@@ -30,7 +30,7 @@ payloads are **decimal strings** of raw base units (USDC microunits, u64/i128)
 | `GET` | `/me` | JWT | Full portfolio: `deposited`, `reserved`, `claimable`, `free`, `equity`, `requirementInitial`, `requirementMaint`, `health`, `operator`, `positions` |
 | `GET` | `/me/positions` | JWT | The wallet's position views (one per side) |
 | `GET` | `/me/history` | JWT | Indexed fills + funding rows in seq order |
-| `GET` | `/market` | public | Market snapshot: `mark`, `index`, `fundingAccumulator`, `bestBid`, `bestAsk` |
+| `GET` | `/market` | public | Market snapshot: `mark` (latest fill price), `index`, `fundingRate` (per-epoch, signed), `fundingAccumulator`, `bestBid`, `bestAsk` |
 | `GET` | `/market/book` | public | L2 book levels `[price, size]`, best first |
 | `GET` | `/market/candles` | public | OHLCV candles over the sampled price series (mark samples ∪ trades): `interval` required (`1m`/`5m`/`15m`/`1h`/`4h`/`1d`), `limit` 1..1000 (default 300); ascending, compact; `400` on bad params |
 | `GET` | `/market/trades` | public | Recent market trades (fills), descending by seq: `limit` 1..200 (default 50); `timeMs` is null only for pre-migration rows |

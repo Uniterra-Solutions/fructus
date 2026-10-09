@@ -155,6 +155,8 @@ export interface MarketView {
   mark: string | null;
   /** Trustless index rate from the stake-pool exchange rate. */
   index: string;
+  /** The current per-epoch funding rate (APY_SCALE-scaled, signed; longs pay when positive). */
+  fundingRate: string;
   /** Signed cumulative funding (i128). */
   fundingAccumulator: string;
   bestBid: string | null;

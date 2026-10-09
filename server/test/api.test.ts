@@ -460,11 +460,15 @@ async function waitForIndexerSlot(server: ServerHandle, timeoutMs = 20_000): Pro
   }
 }
 
-/** Expected signed upnl from the decoded position vs the decoded market row (state.test.ts convention). */
-function decodedUpnl(position: PositionState, market: PerpMarketState): bigint {
+/**
+ * Expected signed upnl from the decoded position vs the CURRENT PRICE pair
+ * (the latest fill — the mark the server settles against; state.test.ts uses
+ * the rate-baseline fallback for fill-less seeds).
+ */
+function decodedUpnl(position: PositionState, curN: bigint, curD: bigint): bigint {
   const side = positionSideFromSideByte(position.side);
   if (side === null) return 0n;
-  return pnl(position.entryN, position.entryD, market.indexN, market.indexD, position.notional, side) ?? 0n;
+  return pnl(position.entryN, position.entryD, curN, curD, position.notional, side) ?? 0n;
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +549,9 @@ test("API-READS-SERVE-INDEXED-TRUTH: /me, /me/positions, /market, /market/book e
     (chainCollateral.deposited - chainCollateral.reserved).toString(),
     "free must equal deposited − reserved (chain-decoded)",
   );
-  const expectedUpnl = decodedUpnl(chainLong, chainMarket);
+  // The scenario's taker open printed at COUNTERPARTY_ASK_PRICE — the latest
+  // fill is the mark the server settles upnl against.
+  const expectedUpnl = decodedUpnl(chainLong, COUNTERPARTY_ASK_PRICE, 1_000_000n);
   assert.equal(
     me.equity,
     (chainCollateral.deposited + expectedUpnl).toString(),
@@ -648,6 +654,7 @@ function checkMarketView(value: unknown): Problems {
   const problems: Problems = [];
   checkNullableUintString(problems, value, "mark");
   checkUintString(problems, value, "index");
+  checkIntString(problems, value, "fundingRate");
   checkIntString(problems, value, "fundingAccumulator");
   checkNullableUintString(problems, value, "bestBid");
   checkNullableUintString(problems, value, "bestAsk");
@@ -812,7 +819,7 @@ test("SHARED-DTOS-STAY-IN-SYNC: runtime shape checks validate every e2e response
   // --- positive controls FIRST: each checker must reject a broken object, so
   // a checker that accepts everything can never count as evidence. ---
   const controls: Array<[string, (value: unknown) => Problems, unknown]> = [
-    ["MarketView", checkMarketView, { mark: null, index: 42, fundingAccumulator: "0", bestBid: null, bestAsk: null }],
+    ["MarketView", checkMarketView, { mark: null, index: 42, fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }],
     ["BookView", checkBookView, { bids: [["900000"]], asks: [] }],
     [
       "UserPortfolio",

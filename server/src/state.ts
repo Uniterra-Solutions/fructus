@@ -53,6 +53,13 @@ export function computePortfolio(db: Db, wallet: PublicKey, market: PublicKey): 
   const initialMarginBps = marketState?.initialMarginBps ?? 0;
   const maintenanceMarginBps = marketState?.maintenanceMarginBps ?? 0;
 
+  // Unrealized PnL settles against the latest traded price (the mark): the
+  // position's average entry price vs the current price. A market without
+  // prints falls back to the rate baseline (`positions::pnl` mirror).
+  const markPrice = db.latestFillPrice(market.toBase58());
+  const curN = markPrice === null ? indexN : BigInt(markPrice);
+  const curD = markPrice === null ? indexD : 1_000_000n;
+
   const positions: PositionView[] = [];
   let pnlSum = 0n;
   let notionalLong = 0n;
@@ -73,7 +80,7 @@ export function computePortfolio(db: Db, wallet: PublicKey, market: PublicKey): 
     const sidePnl =
       sideEnum === null
         ? 0n
-        : (pnl(position.entryN, position.entryD, indexN, indexD, position.notional, sideEnum) ?? 0n);
+        : (pnl(position.entryN, position.entryD, curN, curD, position.notional, sideEnum) ?? 0n);
     pnlSum += sidePnl;
     if (position.side === 0) notionalLong += position.notional;
     else notionalShort += position.notional;
@@ -82,6 +89,10 @@ export function computePortfolio(db: Db, wallet: PublicKey, market: PublicKey): 
       side: position.side === 1 ? 1 : 0,
       notional: position.notional.toString(),
       upnl: sidePnl.toString(),
+      // The volume-weighted average entry price (1e6-scaled), when known.
+      ...(position.entryD === 0n
+        ? {}
+        : { entryRate: ((position.entryN * 1_000_000n) / position.entryD).toString() }),
       reqInitial: marginRequired(position.notional, initialMarginBps).toString(),
       reqMaint: marginRequired(position.notional, maintenanceMarginBps).toString(),
     });
@@ -126,7 +137,7 @@ export function computeMarket(db: Db, market: PublicKey): MarketView {
   const marketRow = decoded(db, "market", market.toBase58());
   const marketState = marketRow === null ? null : decodePerpMarket(marketRow);
   if (marketState === null) {
-    return { mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null };
+    return { mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null };
   }
 
   const bookRow = decoded(db, "order_book", orderBookPda(market).address.toBase58());
@@ -140,12 +151,25 @@ export function computeMarket(db: Db, market: PublicKey): MarketView {
   // the first fill.
   const mark = db.latestFillPrice(market.toBase58());
 
+  // The live funding rate (program formula, `funding.rs`): the premium of the
+  // mark over the index, scaled by funding_k and clamped to ±max_funding —
+  // what the terminal displays (a rate, not the zero-sum accumulator). The
+  // book mid stands in while the market has no prints.
+  const indexValue = indexLevel(marketState);
+  const midValue = bestBidValue !== 0n && bestAskValue !== 0n ? (bestBidValue + bestAskValue) / 2n : null;
+  const fundingRef = mark !== null ? BigInt(mark) : midValue;
+  const maxFunding = BigInt(marketState.maxFunding);
+  const rawRate =
+    fundingRef === null ? 0n : (marketState.fundingK * (fundingRef - indexValue)) / 1_000_000n;
+  const fundingRate = rawRate > maxFunding ? maxFunding : rawRate < -maxFunding ? -maxFunding : rawRate;
+
   return {
     mark,
     // The trustless index level: the market's last-settlement stake-pool rate
     // (`index_n`/`index_d`) scaled to the 1e6 price convention. `0` marks an
     // un-set baseline (no settlement yet) — see `indexLevel`.
-    index: indexLevel(marketState).toString(),
+    index: indexValue.toString(),
+    fundingRate: fundingRate.toString(),
     fundingAccumulator: marketState.fundingAccumulator.toString(),
     bestBid: bestBidValue === 0n ? null : bestBidValue.toString(),
     bestAsk: bestAskValue === 0n ? null : bestAskValue.toString(),

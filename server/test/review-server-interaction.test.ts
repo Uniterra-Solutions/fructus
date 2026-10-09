@@ -412,7 +412,7 @@ async function startWsHarness(
     market: MARKET,
     computePortfolio,
     computeBook: () => ({ bids: [], asks: [] }),
-    computeMarket: () => ({ mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
+    computeMarket: () => ({ mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
@@ -679,7 +679,7 @@ async function startApiHarness(): Promise<ApiHarness> {
     keeper,
     faucet: null,
     getPortfolio: (w) => portfolioFixture(w.toBase58(), 1_000n),
-    getMarket: () => ({ mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
+    getMarket: () => ({ mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
     getBook: () => ({ bids: [], asks: [] }),
     connection: {} as unknown as Connection,
     programId: PROGRAM_ID,

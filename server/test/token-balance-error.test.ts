@@ -96,7 +96,7 @@ async function startApiHarness(throwable: unknown): Promise<ApiHarness> {
       operator: null,
       positions: [],
     }),
-    getMarket: () => ({ mark: null, index: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
+    getMarket: () => ({ mark: null, index: "0", fundingRate: "0", fundingAccumulator: "0", bestBid: null, bestAsk: null }),
     getBook: () => ({ bids: [], asks: [] }),
     connection: {} as unknown as Connection,
     programId: PROGRAM_ID,

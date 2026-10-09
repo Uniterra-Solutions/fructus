@@ -8,12 +8,19 @@ export interface MarketStatsProps {
   market: MarketView | null;
 }
 
+/** The funding rate is APY_SCALE-scaled per epoch; render as a signed percent. */
+function formatFundingRate(raw: string): string {
+  const value = Number(raw) / 10_000;
+  if (!Number.isFinite(value)) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(4)}%`;
+}
+
 export function MarketStats({ market }: MarketStatsProps) {
   const { t } = useLocale();
   const cells: Array<[label: string, value: string]> = [
     [t("market.mark"), market !== null && market.mark !== null ? formatAmount(market.mark) : "—"],
     [t("market.index"), market !== null ? formatAmount(market.index) : "—"],
-    [t("market.funding"), market !== null ? formatAmount(market.fundingAccumulator) : "—"],
+    [t("market.funding"), market !== null ? formatFundingRate(market.fundingRate) : "—"],
   ];
 
   return (
