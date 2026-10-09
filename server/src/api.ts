@@ -719,11 +719,46 @@ function sendError(res: ServerResponse, err: unknown): void {
     } satisfies ApiResponse<never>);
     return;
   }
+  // F3 · TOKEN-BALANCE-ERROR-IS-4XX: the SPL Token program's `insufficient
+  // funds` (error 0x1) is a client-side balance precondition, not an internal
+  // fault. Measured: a deposit larger than the wallet's token balance returned
+  // the opaque 500 `internal`; it maps to a stable 4xx domain error instead.
+  if (isTokenInsufficientFunds(err)) {
+    console.error(`fructus-server: on-chain action failed (insufficient token balance): ${detail}`);
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: "insufficient_token_balance",
+        message: "on-chain action failed: the wallet's token balance is insufficient",
+      },
+    } satisfies ApiResponse<never>);
+    return;
+  }
   console.error(`fructus-server: internal error: ${detail}`);
   sendJson(res, 500, {
     ok: false,
     error: { code: "internal", message: "internal error" },
   } satisfies ApiResponse<never>);
+}
+
+/**
+ * The SPL Token program id — present in the simulation text whenever the token
+ * CPI runs; combined with an `insufficient funds` line it identifies the
+ * token-balance shortfall (the failing and the invoking programs are distinct
+ * log lines, so the two markers are matched across the joined text).
+ */
+const TOKEN_PROGRAM_ID_B58 = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+function isTokenInsufficientFunds(err: unknown): boolean {
+  const texts: string[] = [];
+  const logs = (err as { logs?: unknown }).logs;
+  if (Array.isArray(logs)) {
+    for (const line of logs) if (typeof line === "string") texts.push(line);
+  }
+  if (err instanceof Error) texts.push(err.message);
+  else if (typeof err === "string") texts.push(err);
+  const joined = texts.join("\n");
+  return joined.includes(TOKEN_PROGRAM_ID_B58) && /insufficient funds/i.test(joined);
 }
 
 // ---------------------------------------------------------------------------
