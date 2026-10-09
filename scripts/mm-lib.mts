@@ -1,7 +1,8 @@
 //! Market-maker quote math (product-v3 REQ-M-1): pure planning functions.
 //!
 //! Contract (pinned by `test/mm-lib.test.ts`):
-//!  - `resolveAnchor(mid, index)` = `mid` when non-null, else the `index`;
+//!  - `resolveAnchor(index)` = the trustless index rate (`null` ⇒ 0n, the
+//!    caller skips the cycle); the book mid never drags the ladder;
 //!  - level k (1-based): `bid_k = floor(anchor·(10000 − k·spreadBps) / 10000)`,
 //!    `ask_k = ceil(anchor·(10000 + k·spreadBps) / 10000)` — integer BigInt math;
 //!  - a quote is skipped when it would cross the book (`bid_k ≥ bestAsk` or
@@ -103,9 +104,13 @@ export function parseIntervalMs(env: Record<string, string | undefined>): number
   return value < MIN_INTERVAL_MS ? MIN_INTERVAL_MS : value;
 }
 
-/** Anchor = `mid` when the book is two-sided, else the index rate. */
-export function resolveAnchor(mid: bigint | null, index: bigint): bigint {
-  return mid ?? index;
+/**
+ * Anchor = the trustless index rate. The book mid is self-referential while
+ * the book only carries the MM's own quotes, so it must not drag the ladder
+ * away from the index.
+ */
+export function resolveAnchor(index: bigint | null): bigint {
+  return index ?? 0n;
 }
 
 /**

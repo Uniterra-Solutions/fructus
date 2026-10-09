@@ -3,7 +3,8 @@
 //! MM-REQUOTE-PLAN-COVERS-OWN-ORDERS (ACCEPTANCE.md rows under `scripts · mm/devstack`).
 //!
 //! Contract pinned here (PRD REQ-M-1):
-//!  - resolveAnchor(mid, index) = mid when non-null, else the index;
+//!  - resolveAnchor(index) = the trustless index rate (null ⇒ 0n, the
+//!    caller skips the cycle); the book mid never drags the ladder;
 //!  - level k (1-based): bid_k = floor(anchor·(10000 − k·spreadBps) / 10000),
 //!    ask_k = ceil(anchor·(10000 + k·spreadBps) / 10000) — integer BigInt math;
 //!  - a quote is skipped when it would cross the book (bid_k ≥ bestAsk or
@@ -228,10 +229,10 @@ test("MM-LADDER-EXACT-OFFSETS: level k sits exactly k×spread bps away (floor/ce
   assert.deepEqual(bBids[0], { side: 0, price: "995002", size: "1000000" });
   assert.deepEqual(bAsks[0], { side: 1, price: "1005004", size: "1000000" });
 
-  // (c) one-sided fallback: null mid ⇒ the index is the anchor; a mid ⇒ the mid wins
-  assert.equal(resolveAnchor(null, 1_234_567n), 1_234_567n);
-  assert.equal(resolveAnchor(999_999n, 1_234_567n), 999_999n);
-  const anchor = resolveAnchor(null, 2_000_000n);
+  // (c) the anchor is the trustless index; null ⇒ 0n (callers skip the cycle)
+  assert.equal(resolveAnchor(1_234_567n), 1_234_567n);
+  assert.equal(resolveAnchor(null), 0n);
+  const anchor = resolveAnchor(2_000_000n);
   assert.equal(anchor, 2_000_000n);
   const oneSided = planQuotes(anchor, null, 3_000_000n, { levels: 1, spreadBps: 50, size: "1000000" });
   assert.deepEqual(oneSided.filter((q) => q.side === 0).map((q) => q.price), ["1990000"]);

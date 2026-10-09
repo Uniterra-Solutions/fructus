@@ -1,10 +1,13 @@
-//! lightweight-charts controller (candles + volume + mark/index lines):
+//! lightweight-charts controller (candles + volume + mark trail + index line):
 //! bootstrap/refresh through the injected `fetchCandles`, live trades folded
-//! under the current interval, and createPriceLine-based mark/index overlays.
+//! under the current interval, a dashed mark trail that follows the served
+//! series up to the latest price, and a createPriceLine index overlay.
 
 import {
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
+  LineStyle as ChartLineStyle,
   createChart,
   type IPriceLine,
   type UTCTimestamp,
@@ -26,7 +29,7 @@ export interface ChartController {
   setCandles(candles: CandleView[]): void;
   /** Fold a live trade into the chart. */
   onTrade(trade: TradeView): void;
-  /** Mark/index horizontal lines (`null` mark → hidden). */
+  /** Index horizontal line (`null` index → hidden); the mark trail follows the series. */
   setMarkLines(market: MarketView | null): void;
   destroy(): void;
 }
@@ -45,6 +48,11 @@ interface CandlePoint {
 }
 
 interface VolumePoint {
+  time: UTCTimestamp;
+  value: number;
+}
+
+interface MarkPoint {
   time: UTCTimestamp;
   value: number;
 }
@@ -76,12 +84,16 @@ function toVolumePoint(candle: CandleView): VolumePoint {
   return { time: toTime(candle.timeMs), value: toPrice(candle.volume) };
 }
 
+/** The mark trail point: the served series' close (the sampled reference price). */
+function toMarkPoint(candle: CandleView): MarkPoint {
+  return { time: toTime(candle.timeMs), value: toPrice(candle.close) };
+}
+
 export function createChartController(opts: ChartControllerOptions): ChartController {
   let interval: CandleInterval = opts.initialInterval ?? DEFAULT_INTERVAL;
   let candles: CandleView[] = [];
   let fetchSeq = 0;
   let destroyed = false;
-  let markLine: IPriceLine | null = null;
   let indexLine: IPriceLine | null = null;
 
   const chart = createChart(opts.container, {
@@ -98,7 +110,15 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       horzLines: { color: "rgba(139, 149, 167, 0.12)" },
     },
     rightPriceScale: { borderColor: "rgba(139, 149, 167, 0.2)" },
-    timeScale: { borderColor: "rgba(139, 149, 167, 0.2)", timeVisible: true, secondsVisible: false },
+    // Fixed bar width: the series scrolls like a terminal instead of
+    // fitContent stretching a handful of samples across the whole pane.
+    timeScale: {
+      borderColor: "rgba(139, 149, 167, 0.2)",
+      timeVisible: true,
+      secondsVisible: false,
+      barSpacing: 8,
+      rightOffset: 4,
+    },
   });
 
   const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -116,11 +136,22 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
     priceLineVisible: false,
   });
 
+  // Dashed orange trail over the served closes: the mark, extended to the
+  // latest price — never a full-width horizontal line.
+  const markSeries = chart.addSeries(LineSeries, {
+    color: "#f5a623",
+    lineWidth: 1,
+    lineStyle: ChartLineStyle.Dashed,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+
   function applyCandles(next: CandleView[]): void {
     candles = next;
     candleSeries.setData(next.map(toCandlePoint));
     volumeSeries.setData(next.map(toVolumePoint));
-    chart.timeScale().fitContent();
+    markSeries.setData(next.map(toMarkPoint));
   }
 
   function load(target: CandleInterval): void {
@@ -178,12 +209,11 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       if (last === undefined) return;
       candleSeries.update(toCandlePoint(last));
       volumeSeries.update(toVolumePoint(last));
+      markSeries.update(toMarkPoint(last));
     },
     setMarkLines(market) {
       if (destroyed) return;
-      const mark = market !== null && market.mark !== null ? toPrice(market.mark) : null;
       const index = market !== null ? toPrice(market.index) : null;
-      markLine = syncPriceLine(markLine, mark, { color: "#f5a623", title: "Mark" });
       indexLine = syncPriceLine(indexLine, index, { color: "#6b7cff", title: "Index" });
     },
     destroy() {
@@ -191,7 +221,6 @@ export function createChartController(opts: ChartControllerOptions): ChartContro
       destroyed = true;
       fetchSeq += 1;
       candles = [];
-      markLine = null;
       indexLine = null;
       chart.remove();
     },

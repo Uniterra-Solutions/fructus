@@ -6,8 +6,9 @@
 //! MM_LEVELS, MM_SPREAD_BPS, MM_SIZE, MM_INTERVAL_MS (see mm-lib).
 //!
 //! Every cycle: read the perp market (index baseline + index source) and the
-//! order book; keep the book orders owned by the bot; `anchor = mid ?? index`
-//! (mid only when the book is two-sided); plan the grid (`planQuotes`) and the
+//! order book; keep the book orders owned by the bot; `anchor = index` (the
+//! trustless rate — the mid is self-referential and kept for diagnostics
+//! only); plan the grid (`planQuotes`) and the
 //! cancel/place diff (`planRequote`); submit cancels then places (one tx per
 //! instruction, signed with the bot keypair and confirmed); log one summary
 //! line. Per-cycle errors are logged and the loop continues; SIGINT stops.
@@ -156,7 +157,7 @@ async function runCycle(ctx: BotContext): Promise<void> {
   const own = collectOwnOrders(book, ctx.bot.publicKey);
   const mid = midFromBook(book); // null unless the book is two-sided
   const index = await readIndexLevel(ctx.connection, market);
-  const anchor = resolveAnchor(mid, index ?? 0n);
+  const anchor = resolveAnchor(index);
   if (anchor <= 0n) {
     console.error(
       `[mm] cycle skipped: no anchor reference (mid=${mid ?? "null"}, index=${index ?? "null"})`,
