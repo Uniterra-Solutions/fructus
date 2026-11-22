@@ -1,5 +1,7 @@
 # Fructus
 
+[![CI](https://github.com/Uniterra-Solutions/fructus/actions/workflows/ci.yml/badge.svg)](https://github.com/Uniterra-Solutions/fructus/actions/workflows/ci.yml)
+
 > **Yield futures on Solana — democratizing access to staking-yield hedging.**
 
 Fructus is a Solana-native protocol for trading **yield futures**. It turns the
@@ -12,6 +14,22 @@ The protocol ships in stages (full detail in [Roadmap](#roadmap)):
 1. **jitoSOL yield perpetual futures** (MVP)
 2. **jitoSOL dated futures** (fixed-expiry contracts)
 3. **Protocol engine** — anyone deploys configurable markets via the SDK
+
+## Prototype at a glance
+
+| | |
+| --- | --- |
+| **Deployed program (devnet)** | `3EsUd5XQ6KChedwL2ho8pv3zrrGGFvMpJEV1PnzN8MD1` — [view on Solana Explorer](https://explorer.solana.com/address/3EsUd5XQ6KChedwL2ho8pv3zrrGGFvMpJEV1PnzN8MD1?cluster=devnet) |
+| **Whitepaper** | *Fructus: Staking-Yield Futures Protocol*, v1.2 — submitted to IDSOL 2026 (Project ID `OP-8B090DDED242`) |
+| **On-chain surface** | 8 modules, 21 instructions at the Stage 1 cut — [`docs/api-reference.md`](docs/api-reference.md) |
+| **Run it** | `cd scripts && npm run devstack`, then the terminal at `127.0.0.1:5173` — [`frontend/README.md`](frontend/README.md) |
+| **Verification** | `cargo nextest run --workspace` (property-based + bank-CPI suites), Trident fuzz, CI green on `main` |
+
+**Snapshot note.** The whitepaper reports the Stage 1 cut at commit `360c478` (8 modules,
+21 instructions, 226 property-based tests). `main` has since added the operator delegation
+surface and the browser trading terminal, so the current instruction count is higher than the
+whitepaper's figure; the settlement, order-book, vault, funding and liquidation modules the
+paper describes are unchanged.
 
 ## Documentation
 
@@ -136,7 +154,12 @@ that provide liquidity and raise the cost of a hostile capital attack.
 ├── publisher/                  # Off-chain TypeScript APY keeper
 ├── sdk/                        # Trader TypeScript SDK (builders, decoders, funding/PnL mirrors)
 ├── cli/                        # Trader CLI over the SDK (open/close/deposit/withdraw/position/funding/mark/index)
-├── scripts/                    # Devnet deploy + e2e lifecycle (deploy.sh, e2e.mts)
+├── server/                     # REST + WebSocket backend for the terminal (book, mark, user, tx, trade)
+├── frontend/                   # Browser trading terminal (Vite + React 19 + lightweight-charts)
+├── integration/                # SDK-level e2e against a live validator
+├── scripts/                    # Devstack, devnet deploy + e2e lifecycle (deploy.sh, e2e.mts, devstack.mts)
+├── deploy/                     # VPS devstack units + nginx front for the hosted terminal
+├── poc/v1-send/                # Transaction V1 (SIMD-0385) send PoC — one transfer on devnet
 ├── trident-tests/              # On-chain fuzz harness
 ├── CHANGELOG.md
 └── LICENSE
@@ -174,7 +197,7 @@ cd trident-tests && cargo run --bin fuzz_0
 
 ## Status
 
-Fructus is in **early development** and is currently a **private** repository. The
+Fructus is in **early development** and the repository is **public**. The
 **data module** (mark-price APY oracle, trustless settlement reference,
 off-chain keeper, fuzz harness), the **perpetual market** account (`PerpMarket` +
 `initialize_market`), the **on-chain order book** (CLOB + mark/twap), the
